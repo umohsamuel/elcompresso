@@ -3,9 +3,10 @@ package handler
 import (
 	"fmt"
 	"io"
-	"log"
+	"mime/multipart"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/umohsamuel/elcompresso/internal/adapter"
@@ -31,36 +32,40 @@ func NewCompressHandler(deps CompressHandlerDependencies) CompressHandler {
 	}
 }
 
+type FormData struct {
+	File    *multipart.FileHeader `form:"file" binding:"required"`
+	Quality int                   `form:"quality"`
+}
+
 func (h CompressHandler) CompressVideo(c *gin.Context) {
 
-	file, err := c.FormFile("file")
-	if err != nil {
-		response.NewErrorResponse(fmt.Errorf("invalid file: %v", err.Error())).Send(c)
+	var fData FormData
+
+	if err := c.ShouldBind(&fData); err != nil {
+		response.NewErrorResponse(fmt.Errorf("invalid form data: %v", err.Error())).Send(c)
 
 		return
 	}
-	log.Println(file.Filename)
 
-	if file.Size > 500<<20 {
-		response.NewErrorResponse(fmt.Errorf("file too large: max 100MB")).Send(c)
+	if fData.File.Size > 500<<20 {
+		response.NewErrorResponse(fmt.Errorf("file too large: max 500MB")).Send(c)
 		return
 	}
 
-	// dst := filepath.Join("./public/uploaded", filepath.Base(file.Filename))
-	// c.SaveUploadedFile(file, dst)
-
-	f, err := file.Open()
+	f, err := fData.File.Open()
 	if err != nil {
 		response.NewErrorResponse(fmt.Errorf("failed to open file: %v", err)).Send(c)
 		return
 	}
 	defer f.Close()
 
+	fmtedFileName := strings.ReplaceAll(fData.File.Filename, " ", "_")
+
 	req := compress.CompressionRequest{
 		Input:    f,
-		FileName: file.Filename,
+		FileName: fmtedFileName,
 		FileType: "video",
-		Quality:  10,
+		Quality:  fData.Quality,
 	}
 
 	res, err := h.adapter.Compressor.Video.Compress(req)
@@ -69,14 +74,7 @@ func (h CompressHandler) CompressVideo(c *gin.Context) {
 		return
 	}
 
-	// cmpRes, err := json.Marshal(res)
-	// if err != nil {
-	// 	response.NewErrorResponse(fmt.Errorf("failed to parse json: %v", err)).Send(c)
-	// 	return
-	// }
-
-	// Save compressed file to tmp/ directory
-	outputName := "compressed_" + filepath.Base(file.Filename)
+	outputName := "compressed_" + filepath.Base(fmtedFileName)
 	outputPath := filepath.Join("tmp", outputName)
 
 	outFile, err := os.Create(outputPath)
@@ -91,11 +89,10 @@ func (h CompressHandler) CompressVideo(c *gin.Context) {
 		return
 	}
 
-	// Build download URL
 	downloadLink := fmt.Sprintf("%s/downloads/%s", "", outputName)
 
 	response.NewSuccessResponse("success", gin.H{
-		"original_size":   file.Size,
+		"original_size":   fData.File.Size,
 		"compressed_size": res.CompressedSize,
 		"download_link":   downloadLink,
 	}, nil).Send(c)
@@ -103,9 +100,122 @@ func (h CompressHandler) CompressVideo(c *gin.Context) {
 }
 
 func (h CompressHandler) CompressAudio(c *gin.Context) {
+	var fData FormData
+
+	if err := c.ShouldBind(&fData); err != nil {
+		response.NewErrorResponse(fmt.Errorf("invalid form data: %v", err.Error())).Send(c)
+
+		return
+	}
+
+	if fData.File.Size > 100<<20 {
+		response.NewErrorResponse(fmt.Errorf("file too large: max 100MB")).Send(c)
+		return
+	}
+
+	f, err := fData.File.Open()
+	if err != nil {
+		response.NewErrorResponse(fmt.Errorf("failed to open file: %v", err)).Send(c)
+		return
+	}
+	defer f.Close()
+
+	fmtedFileName := strings.ReplaceAll(fData.File.Filename, " ", "_")
+
+	req := compress.CompressionRequest{
+		Input:    f,
+		FileName: fmtedFileName,
+		FileType: "audio",
+		Quality:  fData.Quality,
+	}
+
+	res, err := h.adapter.Compressor.Audio.Compress(req)
+	if err != nil {
+		response.NewErrorResponse(fmt.Errorf("failed to compress file: %v", err)).Send(c)
+		return
+	}
+
+	outputName := "compressed_" + filepath.Base(fmtedFileName)
+	outputPath := filepath.Join("tmp", outputName)
+
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		response.NewErrorResponse(fmt.Errorf("failed to save file: %v", err)).Send(c)
+		return
+	}
+	defer outFile.Close()
+
+	if _, err := io.Copy(outFile, res.Output); err != nil {
+		response.NewErrorResponse(fmt.Errorf("failed to write file: %v", err)).Send(c)
+		return
+	}
+
+	downloadLink := fmt.Sprintf("%s/downloads/%s", "", outputName)
+
+	response.NewSuccessResponse("success", gin.H{
+		"original_size":   fData.File.Size,
+		"compressed_size": res.CompressedSize,
+		"download_link":   downloadLink,
+	}, nil).Send(c)
 
 }
 
 func (h CompressHandler) CompressImage(c *gin.Context) {
+	var fData FormData
 
+	if err := c.ShouldBind(&fData); err != nil {
+		response.NewErrorResponse(fmt.Errorf("invalid form data: %v", err.Error())).Send(c)
+
+		return
+	}
+
+	if fData.File.Size > 100<<20 {
+		response.NewErrorResponse(fmt.Errorf("file too large: max 100MB")).Send(c)
+		return
+	}
+
+	f, err := fData.File.Open()
+	if err != nil {
+		response.NewErrorResponse(fmt.Errorf("failed to open file: %v", err)).Send(c)
+		return
+	}
+	defer f.Close()
+
+	fmtedFileName := strings.ReplaceAll(fData.File.Filename, " ", "_")
+
+	req := compress.CompressionRequest{
+		Input:    f,
+		FileName: fmtedFileName,
+		FileType: "image",
+		Quality:  fData.Quality,
+	}
+
+	res, err := h.adapter.Compressor.Image.Compress(req)
+	if err != nil {
+		response.NewErrorResponse(fmt.Errorf("failed to compress file: %v", err)).Send(c)
+		return
+	}
+
+	outputName := "compressed_" + filepath.Base(fmtedFileName)
+	outputPath := filepath.Join("tmp", outputName)
+
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		response.NewErrorResponse(fmt.Errorf("failed to save file: %v", err)).Send(c)
+		return
+	}
+	defer outFile.Close()
+
+	if _, err := io.Copy(outFile, res.Output); err != nil {
+		response.NewErrorResponse(fmt.Errorf("failed to write file: %v", err)).Send(c)
+		return
+	}
+
+	downloadLink := fmt.Sprintf("%s/downloads/%s", "", outputName)
+
+	response.NewSuccessResponse("success", gin.H{
+		"original_size":   fData.File.Size,
+		"compressed_size": res.CompressedSize,
+		"download_link":   downloadLink,
+	}, nil).Send(c)
 }

@@ -78,5 +78,7 @@ func (server *Server) fileCompressRoutes(rg *gin.RouterGroup) {
 
 	{
 		fcRoute.POST("/video", h.CompressVideo)
+		fcRoute.POST("/audio", h.CompressAudio)
+		fcRoute.POST("/image", h.CompressImage)
 	}
 }
