@@ -5,6 +5,7 @@ import (
 
 	"github.com/umohsamuel/elcompresso/cmd/api"
 	"github.com/umohsamuel/elcompresso/internal/adapter"
+	"github.com/umohsamuel/elcompresso/internal/adapter/compressor"
 	"github.com/umohsamuel/elcompresso/internal/service"
 	"github.com/umohsamuel/elcompresso/pkg/env"
 	"github.com/umohsamuel/elcompresso/pkg/util"
@@ -24,6 +25,7 @@ func main() {
 
 	adapterDependencies := adapter.AdapterDependencies{
 		EnvironmentVariables: environmentVariables,
+		Compressor:           &compressor.CompressorDependencies{},
 	}
 
 	adapters := adapter.NewAdapter(adapterDependencies)

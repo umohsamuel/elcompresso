@@ -2,3 +2,4 @@ input
 output
 tmp
 .env
+public/input

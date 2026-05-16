@@ -6,7 +6,7 @@ import (
 )
 
 func GetRootPath() string {
-	projectDirName := "elcompresso"
+	projectDirName := "backend"
 	projectName := regexp.MustCompile(`^(.*` + projectDirName + `)`)
 	currentWorkDirectory, _ := os.Getwd()
 	return string(projectName.Find([]byte(currentWorkDirectory)))
