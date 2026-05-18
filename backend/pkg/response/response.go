@@ -12,15 +12,20 @@ type ErrorResponse struct {
 	ErrorMessage any    `json:"error"`
 }
 
-func NewErrorResponse(err error) ErrorResponse {
+func NewErrorResponse(err error, errCode ...int) ErrorResponse {
 	var errorMessage string = ""
 	if err != nil {
 		errorMessage = err.Error()
 	}
 
+	statusCode := http.StatusInternalServerError
+	if len(errCode) > 0 && errCode[0] != 0 {
+		statusCode = errCode[0]
+	}
+
 	return ErrorResponse{
-		StatusCode:   http.StatusInternalServerError,
-		Message:      "Internal Server Error",
+		StatusCode:   statusCode,
+		Message:      http.StatusText(statusCode),
 		ErrorMessage: errorMessage,
 	}
 }

@@ -7,6 +7,7 @@ import (
 )
 
 type Storage interface {
-	Upload(ctx context.Context, key string, reader io.Reader) (url string, err error)
-	GenerateDownloadURL(ctx context.Context, key string, expiry time.Duration) (string, error)
+	Upload(ctx context.Context, filename string, file io.Reader) (string, error)
+
+	GenerateDownloadURL(ctx context.Context, filename string, expiry time.Duration) (string, error)
 }

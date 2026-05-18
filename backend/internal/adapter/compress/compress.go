@@ -1,9 +1,9 @@
-package compressor
+package compress
 
 import (
-	"github.com/umohsamuel/elcompresso/internal/adapter/compressor/audio"
-	"github.com/umohsamuel/elcompresso/internal/adapter/compressor/image"
-	"github.com/umohsamuel/elcompresso/internal/adapter/compressor/video"
+	"github.com/umohsamuel/elcompresso/internal/adapter/compress/audio"
+	"github.com/umohsamuel/elcompresso/internal/adapter/compress/image"
+	"github.com/umohsamuel/elcompresso/internal/adapter/compress/video"
 	"github.com/umohsamuel/elcompresso/internal/domain/compress"
 )
 

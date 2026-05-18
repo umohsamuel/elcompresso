@@ -51,6 +51,7 @@ func API(services *service.Services, environment *env.EnvironmentVariables) *Ser
 
 	{
 		r.fileCompressRoutes(api)
+		r.fileUploadRoutes(api)
 	}
 
 	return r
@@ -81,4 +82,23 @@ func (server *Server) fileCompressRoutes(rg *gin.RouterGroup) {
 		fcRoute.POST("/audio", h.CompressAudio)
 		fcRoute.POST("/image", h.CompressImage)
 	}
+}
+
+func (server *Server) fileUploadRoutes(rg *gin.RouterGroup) {
+	// server.Engine.MaxMultipartMemory = 500 << 20
+
+	h := handler.NewUploadHandler(struct {
+		Env     env.EnvironmentVariables
+		Adapter adapter.Adapters
+	}{
+		Env:     *server.Environment,
+		Adapter: *server.Service.Adapter,
+	},
+	)
+
+	rg.POST("/file-upload", h.UploadHandler)
+
+	// {
+	// 	fsRoute.POST("/file", h.UploadHandler)
+	// }
 }

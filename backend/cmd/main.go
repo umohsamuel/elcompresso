@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"github.com/umohsamuel/elcompresso/cmd/api"
 	"github.com/umohsamuel/elcompresso/internal/adapter"
-	"github.com/umohsamuel/elcompresso/internal/adapter/compressor"
+	"github.com/umohsamuel/elcompresso/internal/adapter/compress"
 	"github.com/umohsamuel/elcompresso/internal/service"
 	"github.com/umohsamuel/elcompresso/pkg/env"
 	"github.com/umohsamuel/elcompresso/pkg/util"
+
+	awsConfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 var (
@@ -23,9 +27,16 @@ func init() {
 
 func main() {
 
+	cfg, err := awsConfig.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		panic(err)
+	}
+	s3Client := s3.NewFromConfig(cfg)
+
 	adapterDependencies := adapter.AdapterDependencies{
 		EnvironmentVariables: environmentVariables,
-		Compressor:           &compressor.CompressorDependencies{},
+		Compressor:           &compress.CompressorDependencies{},
+		StorageClient:        s3Client,
 	}
 
 	adapters := adapter.NewAdapter(adapterDependencies)
