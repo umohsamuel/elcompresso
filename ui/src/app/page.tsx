@@ -1,14 +1,20 @@
 "use client";
 
-import FileInput from "@/components/input/file";
-import { useState } from "react";
+import { CompressorTabs } from "@/components/compressor-tabs";
 
 export default function Home() {
-  const [files, setFiles] = useState<File[]>([]);
-
   return (
-    <div className="max-w-lg mx-auto h-full w-full py-8 flex items-center justify-center min-h-screen">
-      <FileInput files={files} setFiles={setFiles} />
-    </div>
+    <main className="flex-1 flex items-center justify-center px-4 py-12">
+      <div className="w-full max-w-md space-y-8">
+        <header className="text-center space-y-2">
+          <h1 className="text-2xl font-bold tracking-tight">elcompresso</h1>
+          <p className="text-sm text-muted-foreground">
+            Compress video, audio, and image files
+          </p>
+        </header>
+
+        <CompressorTabs />
+      </div>
+    </main>
   );
 }
