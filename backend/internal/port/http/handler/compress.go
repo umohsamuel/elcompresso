@@ -2,13 +2,12 @@ package handler
 
 import (
 	"fmt"
-	"io"
 	"mime/multipart"
-	"os"
-	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/umohsamuel/elcompresso/internal/adapter"
 	"github.com/umohsamuel/elcompresso/internal/domain/compress"
 	"github.com/umohsamuel/elcompresso/pkg/env"
@@ -74,27 +73,18 @@ func (h CompressHandler) CompressVideo(c *gin.Context) {
 		return
 	}
 
-	outputName := "compressed_" + filepath.Base(fmtedFileName)
-	outputPath := filepath.Join("tmp", outputName)
-
-	outFile, err := os.Create(outputPath)
+	key, err := h.adapter.Storage.Upload(c.Request.Context(), uuid.New().String()+"_"+fData.File.Filename, res.Output)
 	if err != nil {
-		response.NewErrorResponse(fmt.Errorf("failed to save file: %v", err)).Send(c)
-		return
-	}
-	defer outFile.Close()
-
-	if _, err := io.Copy(outFile, res.Output); err != nil {
-		response.NewErrorResponse(fmt.Errorf("failed to write file: %v", err)).Send(c)
+		response.NewErrorResponse(fmt.Errorf("upload failed: %w", err)).Send(c)
 		return
 	}
 
-	downloadLink := fmt.Sprintf("%s/downloads/%s", "", outputName)
+	dUrl, err := h.adapter.Storage.GenerateDownloadURL(c.Request.Context(), key, 24*time.Hour)
 
 	response.NewSuccessResponse("success", gin.H{
 		"original_size":   fData.File.Size,
 		"compressed_size": res.CompressedSize,
-		"download_link":   downloadLink,
+		"download_link":   dUrl,
 	}, nil).Send(c)
 
 }
@@ -135,27 +125,18 @@ func (h CompressHandler) CompressAudio(c *gin.Context) {
 		return
 	}
 
-	outputName := "compressed_" + filepath.Base(fmtedFileName)
-	outputPath := filepath.Join("tmp", outputName)
-
-	outFile, err := os.Create(outputPath)
+	key, err := h.adapter.Storage.Upload(c.Request.Context(), uuid.New().String()+"_"+fData.File.Filename, res.Output)
 	if err != nil {
-		response.NewErrorResponse(fmt.Errorf("failed to save file: %v", err)).Send(c)
-		return
-	}
-	defer outFile.Close()
-
-	if _, err := io.Copy(outFile, res.Output); err != nil {
-		response.NewErrorResponse(fmt.Errorf("failed to write file: %v", err)).Send(c)
+		response.NewErrorResponse(fmt.Errorf("upload failed: %w", err)).Send(c)
 		return
 	}
 
-	downloadLink := fmt.Sprintf("%s/downloads/%s", "", outputName)
+	dUrl, err := h.adapter.Storage.GenerateDownloadURL(c.Request.Context(), key, 24*time.Hour)
 
 	response.NewSuccessResponse("success", gin.H{
 		"original_size":   fData.File.Size,
 		"compressed_size": res.CompressedSize,
-		"download_link":   downloadLink,
+		"download_link":   dUrl,
 	}, nil).Send(c)
 
 }
@@ -196,26 +177,17 @@ func (h CompressHandler) CompressImage(c *gin.Context) {
 		return
 	}
 
-	outputName := "compressed_" + filepath.Base(fmtedFileName)
-	outputPath := filepath.Join("tmp", outputName)
-
-	outFile, err := os.Create(outputPath)
+	key, err := h.adapter.Storage.Upload(c.Request.Context(), uuid.New().String()+"_"+fData.File.Filename, res.Output)
 	if err != nil {
-		response.NewErrorResponse(fmt.Errorf("failed to save file: %v", err)).Send(c)
-		return
-	}
-	defer outFile.Close()
-
-	if _, err := io.Copy(outFile, res.Output); err != nil {
-		response.NewErrorResponse(fmt.Errorf("failed to write file: %v", err)).Send(c)
+		response.NewErrorResponse(fmt.Errorf("upload failed: %w", err)).Send(c)
 		return
 	}
 
-	downloadLink := fmt.Sprintf("%s/downloads/%s", "", outputName)
+	dUrl, err := h.adapter.Storage.GenerateDownloadURL(c.Request.Context(), key, 24*time.Hour)
 
 	response.NewSuccessResponse("success", gin.H{
 		"original_size":   fData.File.Size,
 		"compressed_size": res.CompressedSize,
-		"download_link":   downloadLink,
+		"download_link":   dUrl,
 	}, nil).Send(c)
 }

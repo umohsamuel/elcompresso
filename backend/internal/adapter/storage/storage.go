@@ -41,18 +41,18 @@ func (s *Stg) Upload(ctx context.Context, filename string, file io.Reader) (stri
 		return "", err
 	}
 
-	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", s.Env.S3.AWS_BUCKET, s.Env.S3.AWS_REGION, filename), nil
+	// return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", s.Env.S3.AWS_BUCKET, s.Env.S3.AWS_REGION, filename), nil
+	return key, nil
 }
 
 func (s *Stg) GenerateDownloadURL(ctx context.Context, filename string, expiry time.Duration) (string, error) {
-	key := "compressed/" + filename
 
 	presignClient := s3.NewPresignClient(s.Client)
 
 	req, err := presignClient.PresignGetObject(ctx,
 		&s3.GetObjectInput{
 			Bucket: aws.String(s.Env.S3.AWS_BUCKET),
-			Key:    aws.String(key),
+			Key:    aws.String(filename),
 		}, s3.WithPresignExpires(expiry))
 
 	if err != nil {
@@ -61,21 +61,3 @@ func (s *Stg) GenerateDownloadURL(ctx context.Context, filename string, expiry t
 
 	return req.URL, nil
 }
-
-// func UploadLocal(filename string, file io.Reader) (string, error) {
-// 	path := filepath.Join(env.UploadPath, filename)
-// 	os.MkdirAll(env.UploadPath, os.ModePerm)
-
-// 	out, err := os.Create(path)
-// 	if err != nil {
-// 		return "", err
-// 	}
-// 	defer out.Close()
-
-// 	_, err = io.Copy(out, file)
-// 	if err != nil {
-// 		return "", err
-// 	}
-
-// 	return fmt.Sprintf("/uploads/%s", filename), nil
-// }
