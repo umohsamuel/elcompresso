@@ -30,12 +30,12 @@ func NewStorageClient(deps StgDeps) storage.Storage {
 }
 
 func (s *Stg) Upload(ctx context.Context, filename string, file io.Reader) (string, error) {
+	key := "compressed/" + filename
 
 	_, err := s.Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.Env.S3.AWS_BUCKET),
-		Key:    aws.String(filename),
+		Key:    aws.String(key),
 		Body:   file,
-		// ACL:    "public-read",
 	})
 	if err != nil {
 		return "", err
@@ -45,7 +45,21 @@ func (s *Stg) Upload(ctx context.Context, filename string, file io.Reader) (stri
 }
 
 func (s *Stg) GenerateDownloadURL(ctx context.Context, filename string, expiry time.Duration) (string, error) {
-	return "hello", nil
+	key := "compressed/" + filename
+
+	presignClient := s3.NewPresignClient(s.Client)
+
+	req, err := presignClient.PresignGetObject(ctx,
+		&s3.GetObjectInput{
+			Bucket: aws.String(s.Env.S3.AWS_BUCKET),
+			Key:    aws.String(key),
+		}, s3.WithPresignExpires(expiry))
+
+	if err != nil {
+		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
+	}
+
+	return req.URL, nil
 }
 
 // func UploadLocal(filename string, file io.Reader) (string, error) {
