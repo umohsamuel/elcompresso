@@ -46,7 +46,7 @@ func (h CompressHandler) CompressVideo(c *gin.Context) {
 		return
 	}
 
-	if fData.File.Size > 500<<20 {
+	if fData.File.Size > 1024<<20 {
 		response.NewErrorResponse(fmt.Errorf("file too large: max 500MB")).Send(c)
 		return
 	}

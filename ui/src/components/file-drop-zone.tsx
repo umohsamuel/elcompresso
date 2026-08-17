@@ -11,7 +11,7 @@ const ACCEPT_MAP: Record<FileType, string> = {
 };
 
 const MAX_SIZE_MAP: Record<FileType, number> = {
-  video: 500 * 1024 * 1024,
+  video: 1024 * 1024 * 1024,
   audio: 100 * 1024 * 1024,
   image: 100 * 1024 * 1024,
 };

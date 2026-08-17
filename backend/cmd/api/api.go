@@ -64,7 +64,7 @@ func (server *Server) health() {
 }
 
 func (server *Server) fileCompressRoutes(rg *gin.RouterGroup) {
-	server.Engine.MaxMultipartMemory = 500 << 20
+	server.Engine.MaxMultipartMemory = 1024 << 20
 
 	h := handler.NewCompressHandler(struct {
 		Env     env.EnvironmentVariables

@@ -35,7 +35,7 @@ func (s *UploadHandler) UploadHandler(c *gin.Context) {
 		return
 	}
 
-	if file.Size > 1000<<20 {
+	if file.Size > 1024<<20 {
 		response.NewErrorResponse(fmt.Errorf("file too large"), http.StatusBadRequest).Send(c)
 		return
 	}
