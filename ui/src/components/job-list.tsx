@@ -59,12 +59,12 @@ export function JobList({ items }: { items: QueueItem[] }) {
         </div>
         <div className="flex gap-1.5">
           {done.length > 1 && (
-            <Button size="xs" variant="outline" onClick={downloadAll}>
+            <Button size="xs" variant="outline" className="max-sm:h-8" onClick={downloadAll}>
               <DownloadSimpleIcon /> Download all ({done.length})
             </Button>
           )}
           {finished > 0 && (
-            <Button size="xs" variant="ghost" onClick={() => jobQueue.clearFinished()}>
+            <Button size="xs" variant="ghost" className="max-sm:h-8" onClick={() => jobQueue.clearFinished()}>
               Clear finished
             </Button>
           )}
@@ -88,7 +88,7 @@ function JobRow({ item }: { item: QueueItem }) {
 
   return (
     <li className="space-y-2 p-3">
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-2 sm:gap-3">
         <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1 space-y-0.5">
           <p className="truncate text-xs font-medium" title={item.name}>
@@ -119,25 +119,26 @@ function JobRow({ item }: { item: QueueItem }) {
 
         <div className="flex shrink-0 gap-1">
           {result && item.type === "image" && item.previewUrl && (
-            <Button size="icon-xs" variant="ghost" aria-label="Compare before and after" title="Compare" onClick={() => setComparing(true)}>
+            <Button size="icon-xs" variant="ghost" className="max-sm:size-8" aria-label="Compare before and after" title="Compare" onClick={() => setComparing(true)}>
               <SplitHorizontalIcon />
             </Button>
           )}
           {result && (
-            <Button size="xs" asChild>
-              <a href={downloadUrl(result.download_url)} download={result.name}>
-                <DownloadSimpleIcon /> Download
+            <Button size="xs" className="max-sm:size-8 max-sm:px-0" asChild>
+              <a href={downloadUrl(result.download_url)} download={result.name} aria-label={`Download ${result.name}`}>
+                <DownloadSimpleIcon /> <span className="max-sm:sr-only">Download</span>
               </a>
             </Button>
           )}
           {(item.status === "failed" || item.status === "canceled") && item.file && (
-            <Button size="icon-xs" variant="ghost" aria-label="Retry" title="Retry" onClick={() => jobQueue.retry(item.id)}>
+            <Button size="icon-xs" variant="ghost" className="max-sm:size-8" aria-label="Retry" title="Retry" onClick={() => jobQueue.retry(item.id)}>
               <ArrowClockwiseIcon />
             </Button>
           )}
           <Button
             size="icon-xs"
             variant="ghost"
+            className="max-sm:size-8"
             aria-label={isActive(item.status) ? "Cancel" : "Remove"}
             title={isActive(item.status) ? "Cancel" : "Remove"}
             onClick={() => (isActive(item.status) ? jobQueue.cancel(item.id) : jobQueue.remove(item.id))}
@@ -148,7 +149,7 @@ function JobRow({ item }: { item: QueueItem }) {
       </div>
 
       {(isActive(item.status) || item.status === "failed" || result?.larger) && (
-        <div className="space-y-1.5 pl-7">
+        <div className="space-y-1.5 sm:pl-7">
           {isActive(item.status) && <Progress value={progress ?? 100} className={cn(progress === undefined && "animate-pulse")} />}
           <p
             className={cn(

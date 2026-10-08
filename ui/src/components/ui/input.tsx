@@ -3,7 +3,7 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 
 const controlClass =
-  "h-7 w-full min-w-0 rounded-none border border-input bg-transparent px-2 text-xs transition-colors outline-none placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive dark:bg-input/30"
+  "h-9 w-full min-w-0 rounded-none border border-input bg-transparent px-2 text-base sm:h-7 sm:text-xs transition-colors outline-none placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive dark:bg-input/30"
 
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
   return (

@@ -47,7 +47,7 @@ export function Segmented<T extends string | number>({
           disabled={o.disabled}
           title={o.hint}
           className={cn(
-            "h-7 min-w-0 truncate bg-background px-2 text-xs text-muted-foreground transition-colors outline-none",
+            "h-9 min-w-0 truncate bg-background px-2 text-xs sm:h-7 text-muted-foreground transition-colors outline-none",
             "hover:bg-muted hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring focus-visible:z-10",
             "data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:font-medium",
             "disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-background"

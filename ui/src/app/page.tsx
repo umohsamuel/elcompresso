@@ -3,6 +3,7 @@
 import { Compressor } from "@/components/compressor";
 import { useCapabilities } from "@/hooks/use-capabilities";
 import { API_BASE_URL } from "@/constants/api";
+import { SITE } from "@/constants/site";
 import { cn } from "@/lib/utils";
 
 export default function Home() {
@@ -10,12 +11,23 @@ export default function Home() {
   const ttlMinutes = caps ? Math.round(caps.limits.result_ttl_seconds / 60) : null;
 
   return (
-    <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:py-12">
-      <header className="mb-8 flex flex-wrap items-end justify-between gap-3">
+    <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:py-12">
+      <header className="mb-6 flex sm:mb-8 flex-wrap items-end justify-between gap-3">
         <div className="space-y-1">
           <h1 className="text-xl font-bold tracking-tight">elcompresso</h1>
           <p className="text-xs text-muted-foreground">
-            Compress, convert and trim video, audio and images.
+            Compress, convert and trim video, audio and images.{" "}
+            <span className="whitespace-nowrap">
+              by{" "}
+              <a
+                href={SITE.author.url}
+                target="_blank"
+                rel="author noopener"
+                className="text-foreground underline-offset-4 hover:underline"
+              >
+                {SITE.author.name}
+              </a>
+            </span>
           </p>
         </div>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground" aria-live="polite">
@@ -42,10 +54,23 @@ export default function Home() {
 
       <Compressor />
 
-      <footer className="mt-12 border-t border-border pt-4 text-[11px] leading-relaxed text-muted-foreground">
-        Files are processed on the server and deleted automatically
-        {ttlMinutes ? ` ${ttlMinutes >= 60 ? `${Math.round(ttlMinutes / 60)}h` : `${ttlMinutes} min`} after compression` : ""}.
-        Your settings are remembered in this browser.
+      <footer className="mt-12 flex flex-col gap-3 border-t border-border pt-4 text-[11px] leading-relaxed text-muted-foreground sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+        <p className="max-w-xl">
+          Files are processed on the server and deleted automatically
+          {ttlMinutes ? ` ${ttlMinutes >= 60 ? `${Math.round(ttlMinutes / 60)}h` : `${ttlMinutes} min`} after compression` : ""}.
+          Your settings are remembered in this browser.
+        </p>
+        <p className="shrink-0">
+          Built by{" "}
+          <a
+            href={SITE.author.url}
+            target="_blank"
+            rel="author noopener"
+            className="font-medium text-foreground underline underline-offset-4 hover:text-foreground/80"
+          >
+            {SITE.author.name}
+          </a>
+        </p>
       </footer>
     </main>
   );

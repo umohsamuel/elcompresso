@@ -92,7 +92,7 @@ export function FileDropZone({ fileType, maxBytes, onFiles, disabled = false }: 
         if (!disabled) handleFiles(e.dataTransfer.files);
       }}
       className={cn(
-        "group flex min-h-[168px] cursor-pointer flex-col items-center justify-center gap-3 border border-dashed p-6 text-center transition-colors outline-none",
+        "group flex min-h-[132px] sm:min-h-[168px] cursor-pointer flex-col items-center justify-center gap-3 border border-dashed p-6 text-center transition-colors outline-none",
         "focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/50",
         isDragging ? "border-foreground bg-accent" : "border-foreground/20 hover:border-foreground/50 hover:bg-accent/40",
         disabled && "cursor-not-allowed opacity-50"

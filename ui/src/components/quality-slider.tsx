@@ -119,7 +119,7 @@ export function QualitySlider({
         ))}
       </div>
 
-      <div className="flex justify-between text-[10px] text-muted-foreground/70">
+      <div className="flex flex-wrap justify-between gap-x-3 text-[10px] text-muted-foreground/70">
         <span>← {lowLabel}</span>
         {detail && <span className="font-mono text-muted-foreground">{detail}</span>}
         <span>{highLabel} →</span>

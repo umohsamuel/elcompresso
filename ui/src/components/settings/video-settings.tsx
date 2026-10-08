@@ -170,7 +170,7 @@ export function VideoSettings({ value: o, onChange, caps }: Props) {
 
 export function chipClass(active: boolean) {
   return [
-    "h-6 px-2 text-[11px] border transition-colors",
+    "h-8 px-2.5 text-[11px] border transition-colors sm:h-6 sm:px-2",
     active
       ? "border-primary bg-primary text-primary-foreground"
       : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground",
