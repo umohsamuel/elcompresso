@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -40,8 +41,64 @@ func (h *JobHandler) limit(t compress.FileType) int64 {
 	}
 }
 
-// Create accepts a multipart upload with an "options" JSON field and a "file"
-// field, stores the file and queues a compression job.
+type beginUploadRequest struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+// BeginUpload hands out a presigned form for uploading one file straight to
+// storage. The browser posts the file there, then calls Create with the
+// upload id. Only available when Capabilities reports direct_upload.
+//
+// POST /api/v1/uploads/:type  {"name": "clip.mp4", "size": 123}
+func (h *JobHandler) BeginUpload(c *gin.Context) {
+	uploads := h.services.Uploads
+	if uploads == nil {
+		response.NewErrorResponse(errors.New("direct uploads are not enabled on this server"), http.StatusNotFound).Send(c)
+		return
+	}
+	fileType := compress.FileType(c.Param("type"))
+	if !fileType.Valid() {
+		response.NewErrorResponse(fmt.Errorf("unknown file type %q", fileType), http.StatusNotFound).Send(c)
+		return
+	}
+	clientIP := c.ClientIP()
+	if err := h.services.Jobs.CheckCapacity(clientIP); err != nil {
+		sendJobError(c, err)
+		return
+	}
+
+	var req beginUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.NewErrorResponse(errors.New("expected {\"name\", \"size\"}"), http.StatusBadRequest).Send(c)
+		return
+	}
+	limit := h.limit(fileType)
+	switch {
+	case req.Size <= 0:
+		response.NewErrorResponse(errors.New("a non-empty file is required"), http.StatusBadRequest).Send(c)
+		return
+	case req.Size > limit:
+		response.NewErrorResponse(fmt.Errorf("file too large: the %s limit is %d MB", fileType, limit>>20), http.StatusRequestEntityTooLarge).Send(c)
+		return
+	}
+
+	u, err := uploads.Begin(c.Request.Context(), fileType, clientIP, cleanName(req.Name), limit)
+	if err != nil {
+		response.NewErrorResponse(errors.New("could not start the upload")).Send(c)
+		return
+	}
+	response.NewSuccessResponse("upload ready", u, nil).SendStatus(c, http.StatusCreated)
+}
+
+type createFromUploadRequest struct {
+	UploadID string          `json:"upload_id"`
+	Options  json.RawMessage `json:"options"`
+}
+
+// Create queues a compression job. It accepts either a multipart upload with
+// an "options" JSON field and a "file" field, or JSON {"upload_id", "options"}
+// for a file already uploaded through BeginUpload.
 //
 // POST /api/v1/jobs/:type
 func (h *JobHandler) Create(c *gin.Context) {
@@ -55,6 +112,11 @@ func (h *JobHandler) Create(c *gin.Context) {
 	clientIP := c.ClientIP()
 	if err := jobs.CheckCapacity(clientIP); err != nil {
 		sendJobError(c, err)
+		return
+	}
+
+	if c.ContentType() == "application/json" {
+		h.createFromUpload(c, fileType, clientIP)
 		return
 	}
 
@@ -141,7 +203,7 @@ func (h *JobHandler) Create(c *gin.Context) {
 		ClientIP:     clientIP,
 		InputPath:    inputPath,
 		WorkDir:      workDir,
-		OriginalName: filepath.Base(strings.ReplaceAll(fileName, `\`, "/")),
+		OriginalName: cleanName(fileName),
 		OriginalSize: size,
 		Options:      opts,
 	})
@@ -151,6 +213,70 @@ func (h *JobHandler) Create(c *gin.Context) {
 	}
 	submitted = true
 	response.NewSuccessResponse("job queued", j, nil).SendStatus(c, http.StatusAccepted)
+}
+
+func (h *JobHandler) createFromUpload(c *gin.Context, fileType compress.FileType, clientIP string) {
+	uploads := h.services.Uploads
+	if uploads == nil {
+		response.NewErrorResponse(errors.New("direct uploads are not enabled on this server"), http.StatusBadRequest).Send(c)
+		return
+	}
+	var req createFromUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.UploadID == "" {
+		response.NewErrorResponse(errors.New("expected {\"upload_id\", \"options\"}"), http.StatusBadRequest).Send(c)
+		return
+	}
+	// Validate options before claiming the upload, so a bad request can be
+	// fixed and retried with the same upload.
+	opts, err := compress.ParseOptions(fileType, req.Options, h.services.Capabilities)
+	if err != nil {
+		response.NewErrorResponse(err, http.StatusBadRequest).Send(c)
+		return
+	}
+
+	up, err := uploads.Take(c.Request.Context(), req.UploadID, fileType, clientIP)
+	if err != nil {
+		if errors.Is(err, service.ErrUploadNotFound) || errors.Is(err, storage.ErrNotFound) {
+			response.NewErrorResponse(service.ErrUploadNotFound, http.StatusNotFound).Send(c)
+			return
+		}
+		response.NewErrorResponse(errors.New("could not read the upload")).Send(c)
+		return
+	}
+
+	id := uuid.NewString()
+	workDir, err := h.services.Jobs.PrepareWorkDir(id)
+	if err != nil {
+		response.NewErrorResponse(errors.New("could not prepare job")).Send(c)
+		return
+	}
+	j, err := h.services.Jobs.Submit(service.SubmitRequest{
+		ID:           id,
+		Type:         fileType,
+		ClientIP:     clientIP,
+		InputPath:    filepath.Join(workDir, "input"+safeExt(up.Name)),
+		WorkDir:      workDir,
+		OriginalName: up.Name,
+		OriginalSize: up.Size,
+		Options:      opts,
+		UploadKey:    up.Key,
+	})
+	if err != nil {
+		_ = os.RemoveAll(workDir)
+		_ = uploads.Discard(c.Request.Context(), up.Key)
+		sendJobError(c, err)
+		return
+	}
+	response.NewSuccessResponse("job queued", j, nil).SendStatus(c, http.StatusAccepted)
+}
+
+// cleanName keeps only the base name of a client-supplied file name.
+func cleanName(name string) string {
+	name = filepath.Base(strings.ReplaceAll(name, `\`, "/"))
+	if name == "." || name == "/" {
+		return ""
+	}
+	return name
 }
 
 // Get returns a job's status.

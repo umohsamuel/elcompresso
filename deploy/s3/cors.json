@@ -1,0 +1,13 @@
+[
+  {
+    "AllowedOrigins": [
+      "https://elcompresso.umohsg.com",
+      "https://elcompresso-*.vercel.app",
+      "http://localhost:3000"
+    ],
+    "AllowedMethods": ["POST", "GET"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]

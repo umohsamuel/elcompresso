@@ -100,24 +100,54 @@ cd backend && go test ./...        # add -short to skip FFmpeg tests
    git clone https://github.com/umohsamuel/elcompresso.git && cd elcompresso
    bash deploy/ec2-setup.sh          # installs Docker, adds swap, creates deploy/.env
    nano deploy/.env                  # set API_DOMAIN and ALLOWED_ORIGINS
-   cd deploy && sudo docker compose up -d --build
+   cd deploy && sudo docker compose --profile caddy up -d --build
    curl https://api.yourdomain.com/health
    ```
    Caddy obtains and renews the TLS certificate automatically.
 
-**Updating**: `git pull && cd deploy && sudo docker compose up -d --build`.
+**Updating**: `git pull && cd deploy && sudo docker compose --profile caddy up -d --build`.
+
+#### Shared instance behind host nginx (GitHub Actions)
+
+The live deploy shares an instance with other apps whose host nginx + certbot already own ports 80/443, so Caddy is left out (it's behind the `caddy` compose profile). The API binds to `127.0.0.1:9003` and `deploy/nginx.conf` proxies the API domain to it. Processing limits in `deploy/limits.env` are sized for that box (2 vCPU, ~1 GB free RAM, 20 GB disk): 500 MB uploads, one encode at a time, 2 GB swap added by the workflow.
+
+`.github/workflows/deploy-backend.yml` runs on pushes to `prod` that touch `backend/` or `deploy/` (or manually). It runs the tests, builds the image on the runner, streams it to the instance over SSH, writes `deploy/.env`, starts the container, installs the nginx site and a certbot certificate on the first deploy, and checks `https://<API_DOMAIN>/health`.
+
+It reads the GitHub `production` environment:
+
+```bash
+gh api -X PUT repos/umohsamuel/elcompresso/environments/production
+gh secret set EC2_HOST --env production --body "<elastic-ip>"
+gh secret set EC2_SSH_KEY --env production < ~/.ssh/<key>
+gh variable set API_DOMAIN --env production --body "elcompresso-api.umohsg.com"
+gh variable set ALLOWED_ORIGINS --env production --body "https://elcompresso.umohsg.com,https://elcompresso-*.vercel.app"
+```
+
+The API domain needs a DNS `A` record pointing at the instance before the first deploy, or certbot fails.
+
 **Logs**: `sudo docker compose logs -f api`.
 
 HTTPS is required: browsers block an HTTPS page on Vercel from calling an `http://` API (mixed content).
 
-#### Using S3 instead of local disk (optional)
+#### S3: direct uploads and results (recommended)
 
-Local disk is simplest for one instance. To store results in S3:
+With `STORAGE_TYPE=s3`, browsers upload straight to S3 with a presigned POST form and download results from presigned URLs, so file bytes never pass through the API, and queued jobs don't use the instance's disk:
 
-1. Create a bucket (block all public access; downloads use presigned URLs).
-2. Attach an IAM **instance role** to the EC2 instance with `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject` on `arn:aws:s3:::your-bucket/compressed/*`. No access keys are needed.
-3. In `deploy/.env`: `STORAGE_TYPE=s3`, `AWS_REGION=…`, `AWS_BUCKET=…`.
-4. Optionally add a lifecycle rule expiring `compressed/` after 1 day as a safety net. The server already deletes results when they expire.
+1. The browser calls `POST /api/v1/uploads/{type}` with the file's name and size. The API checks the limits and returns a presigned form (valid 1 hour). The size limit is part of the signed policy, so S3 itself rejects bigger files.
+2. The browser posts the file to S3, showing upload progress.
+3. The browser calls `POST /api/v1/jobs/{type}` with `{"upload_id", "options"}`. Each upload can be claimed once, by the client that started it, and its real size is checked.
+4. When a worker starts the job it pulls the file from S3, encodes it, uploads the result to `compressed/`, and deletes the upload.
+
+Local storage (`STORAGE_TYPE=local`) keeps the plain multipart upload through the API, so local development needs no AWS account.
+
+Setup (the JSON files are in `deploy/s3/`):
+
+1. **Bucket**: create one in the instance's region with all public access blocked.
+2. **CORS** (bucket → Permissions → CORS): paste `cors.json`, with your frontend origins.
+3. **Lifecycle** (bucket → Management): add the rules in `lifecycle.json`, which expire uploads that were never turned into jobs, and old results, after a day.
+4. **IAM role**: create a role for EC2 with the policy in `instance-policy.json` (replace `BUCKET_NAME`), then attach it to the instance (Actions → Security → Modify IAM role). No access keys are needed.
+5. **Metadata hop limit**: containers reach the instance role through one extra network hop, so set it to 2 (Actions → Instance settings → Modify instance metadata options → hop limit `2`).
+6. **Config**: set `AWS_BUCKET` and `AWS_REGION` (GitHub `production` variables for the Actions deploy, or `deploy/.env` by hand). The deploy then switches to `STORAGE_TYPE=s3`.
 
 ### Frontend on Vercel
 
@@ -137,7 +167,7 @@ All backend settings are environment variables (see `backend/.env.example` and `
 | `TRUSTED_PROXIES` | private ranges | Proxies whose `X-Forwarded-For` is trusted |
 | `DATA_DIR` | `./data` | Working files, plus results when using local storage |
 | `STORAGE_TYPE` | `local` | `local` or `s3` |
-| `AWS_REGION`, `AWS_BUCKET`, `S3_PREFIX` | -, -, `compressed/` | S3 settings |
+| `AWS_REGION`, `AWS_BUCKET`, `S3_PREFIX`, `S3_UPLOAD_PREFIX` | -, -, `compressed/`, `uploads/` | S3 settings |
 | `RESULT_TTL` | `1h` | How long results stay downloadable |
 | `WORKERS` | CPUs / 2 | Parallel encodes |
 | `QUEUE_SIZE` | `100` | Max waiting jobs before returning 503 |
@@ -159,8 +189,9 @@ Responses are JSON: `{"message": "...", "data": ...}` on success, `{"message": "
 
 | Method & path | Description |
 | --- | --- |
-| `GET /api/v1/capabilities` | Available codecs/formats, limits, defaults |
-| `POST /api/v1/jobs/{type}` | Multipart: `options` (JSON) and `file`. Returns `202` with the job |
+| `GET /api/v1/capabilities` | Available codecs/formats, limits, defaults, and `direct_upload` |
+| `POST /api/v1/uploads/{type}` | JSON `{name, size}`. Returns a presigned S3 form `{id, url, fields}` (S3 storage only) |
+| `POST /api/v1/jobs/{type}` | Multipart `options` (JSON) + `file`, or JSON `{upload_id, options}` after a direct upload. Returns `202` with the job |
 | `GET /api/v1/jobs/{id}` | Job status |
 | `GET /api/v1/jobs?ids=a,b,c` | Several jobs at once (unknown ids omitted) |
 | `DELETE /api/v1/jobs/{id}` | Cancel a running job, or delete a finished result |

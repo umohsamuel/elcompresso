@@ -29,6 +29,13 @@ export const SITE = {
     name: "Samuel Umoh",
     url: "https://www.umohsg.com/",
   },
+  links: [
+    {
+      label: "article",
+      href: "https://www.umohsg.com/blog/ffmpeg-go-and-poor-life-decisions-building-elcompresso-e3f6cb72-de93-4b09-8b0d-2e56fe9dfbfa",
+    },
+    { label: "github", href: "https://github.com/umohsamuel/elcompresso" },
+  ],
   // Matches --background in globals.css.
   themeColor: "#0a0a0a",
 } as const;

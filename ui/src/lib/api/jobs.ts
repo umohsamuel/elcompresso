@@ -1,10 +1,11 @@
-import { AxiosError } from "axios";
+import axios, { AxiosError } from "axios";
 import { apiClient } from "@/lib/api-client";
 import { API_BASE_URL, API_ROUTES } from "@/constants/api";
 import type {
   ApiEnvelope,
   ApiError,
   Capabilities,
+  DirectUpload,
   FileType,
   Job,
   OptionsByType,
@@ -17,15 +18,21 @@ export async function getCapabilities(): Promise<Capabilities> {
   return data.data;
 }
 
+interface CreateJobOptions {
+  signal?: AbortSignal;
+  onUploadProgress?: (fraction: number) => void;
+  /** Upload straight to storage (when the server reports direct_upload). */
+  direct?: boolean;
+}
+
 export async function createJob<T extends FileType>(
   type: T,
   file: File,
   options: OptionsByType[T],
-  {
-    signal,
-    onUploadProgress,
-  }: { signal?: AbortSignal; onUploadProgress?: (fraction: number) => void }
+  { signal, onUploadProgress, direct }: CreateJobOptions
 ): Promise<Job> {
+  if (direct) return createJobDirect(type, file, options, { signal, onUploadProgress });
+
   // Options go first so the server can validate them before the file body.
   const form = new FormData();
   form.append("options", JSON.stringify(options));
@@ -41,6 +48,42 @@ export async function createJob<T extends FileType>(
         if (e.total) onUploadProgress?.(e.loaded / e.total);
       },
     }
+  );
+  return data.data;
+}
+
+/**
+ * Uploads the file straight to S3 with a presigned form, then asks the API to
+ * queue a job for it. The file never passes through the API server.
+ */
+async function createJobDirect<T extends FileType>(
+  type: T,
+  file: File,
+  options: OptionsByType[T],
+  { signal, onUploadProgress }: CreateJobOptions
+): Promise<Job> {
+  const { data: slot } = await apiClient.post<ApiEnvelope<DirectUpload>>(
+    API_ROUTES.beginUpload(type),
+    { name: file.name, size: file.size },
+    { signal }
+  );
+
+  // S3 requires the policy fields first and the file last.
+  const form = new FormData();
+  for (const [k, v] of Object.entries(slot.data.fields)) form.append(k, v);
+  form.append("file", file);
+  await axios.post(slot.data.url, form, {
+    signal,
+    timeout: 0,
+    onUploadProgress: (e) => {
+      if (e.total) onUploadProgress?.(e.loaded / e.total);
+    },
+  });
+
+  const { data } = await apiClient.post<ApiEnvelope<Job>>(
+    API_ROUTES.createJob(type),
+    { upload_id: slot.data.id, options },
+    { signal }
   );
   return data.data;
 }
@@ -67,6 +110,10 @@ export function errorMessage(err: unknown, fallback = "Something went wrong"): s
   if (err instanceof AxiosError) {
     const apiErr = err.response?.data as ApiError | undefined;
     if (apiErr?.error) return apiErr.error;
+    // S3 answers with XML; its errors mean the upload itself was rejected.
+    if (typeof err.response?.data === "string" && err.response.data.includes("EntityTooLarge")) {
+      return "File is larger than the server allows";
+    }
     if (err.code === "ERR_NETWORK") return "Can't reach the server";
     return err.message;
   }

@@ -1,0 +1,17 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-abandoned-uploads",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "uploads/" },
+      "Expiration": { "Days": 1 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
+    },
+    {
+      "ID": "expire-old-results",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "compressed/" },
+      "Expiration": { "Days": 1 }
+    }
+  ]
+}

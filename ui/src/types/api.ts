@@ -105,6 +105,16 @@ export interface Capabilities {
   };
   container_codecs: Record<VideoContainer, VideoCodec[]>;
   defaults: OptionsByType;
+  /** Files are uploaded straight to storage (S3) instead of through the API. */
+  direct_upload?: boolean;
+}
+
+/** A presigned form for uploading one file straight to storage. */
+export interface DirectUpload {
+  id: string;
+  url: string;
+  fields: Record<string, string>;
+  expires_at: string;
 }
 
 export interface ApiEnvelope<T> {

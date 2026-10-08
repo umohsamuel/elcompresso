@@ -54,12 +54,27 @@ func (server *Server) jobRoutes(rg *gin.RouterGroup) {
 	h := handler.NewJobHandler(server.Environment, server.Service)
 	limiter := middleware.NewRateLimiter(server.Environment.RateLimitPerMinute)
 
+	// Direct uploads are rate limited when the upload slot is issued, so
+	// turning that upload into a job doesn't count twice.
+	rg.POST("/uploads/:type", limiter.Middleware(), h.BeginUpload)
+
 	jobs := rg.Group("/jobs")
-	jobs.POST("/:type", limiter.Middleware(), h.Create)
+	jobs.POST("/:type", unlessJSON(limiter.Middleware()), h.Create)
 	jobs.GET("", h.List)
 	jobs.GET("/:id", h.Get)
 	jobs.DELETE("/:id", h.Cancel)
 	jobs.GET("/:id/download", h.Download)
+}
+
+// unlessJSON applies mw to every request except JSON ones.
+func unlessJSON(mw gin.HandlerFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.ContentType() == "application/json" {
+			c.Next()
+			return
+		}
+		mw(c)
+	}
 }
 
 func corsConfig(origins []string) cors.Config {

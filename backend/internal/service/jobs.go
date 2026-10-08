@@ -39,6 +39,9 @@ type entry struct {
 	inputPath string
 	workDir   string
 	clientIP  string
+	// uploadKey is set for direct uploads: the input is still in storage and
+	// is fetched to inputPath when the job starts.
+	uploadKey string
 	cancel    context.CancelFunc
 }
 
@@ -46,6 +49,7 @@ type JobManager struct {
 	cfg         JobManagerConfig
 	compressors map[compress.FileType]compress.Interface
 	storage     storage.Storage
+	uploads     storage.DirectUploader // nil without direct uploads
 	log         *slog.Logger
 
 	mu       sync.RWMutex
@@ -80,6 +84,7 @@ func NewJobManager(cfg JobManagerConfig, compressors map[compress.FileType]compr
 		baseCtx:     ctx,
 		stop:        cancel,
 	}
+	m.uploads, _ = store.(storage.DirectUploader)
 	for range cfg.Workers {
 		m.wg.Go(m.worker)
 	}
@@ -118,6 +123,8 @@ type SubmitRequest struct {
 	OriginalName string
 	OriginalSize int64
 	Options      compress.Options
+	// UploadKey marks a direct upload still in storage (see Uploads).
+	UploadKey string
 }
 
 func (m *JobManager) Submit(req SubmitRequest) (job.Job, error) {
@@ -134,6 +141,7 @@ func (m *JobManager) Submit(req SubmitRequest) (job.Job, error) {
 		inputPath: req.InputPath,
 		workDir:   req.WorkDir,
 		clientIP:  req.ClientIP,
+		uploadKey: req.UploadKey,
 	}
 
 	m.mu.Lock()
@@ -316,12 +324,21 @@ func (m *JobManager) process(e *entry) {
 		m.mu.Unlock()
 	}
 
-	res, err := m.compressors[e.job.Type].Compress(ctx, compress.Task{
-		InputPath:    e.inputPath,
-		WorkDir:      e.workDir,
-		OriginalName: e.job.OriginalName,
-		Options:      e.job.Options,
-	}, progress)
+	var err error
+	if e.uploadKey != "" {
+		progress("preparing", 0)
+		err = m.uploads.FetchUpload(ctx, e.uploadKey, e.inputPath)
+	}
+
+	var res *compress.Result
+	if err == nil {
+		res, err = m.compressors[e.job.Type].Compress(ctx, compress.Task{
+			InputPath:    e.inputPath,
+			WorkDir:      e.workDir,
+			OriginalName: e.job.OriginalName,
+			Options:      e.job.Options,
+		}, progress)
+	}
 
 	var result *job.Result
 	if err == nil {
@@ -390,6 +407,16 @@ func (m *JobManager) finishLocked(e *entry, status job.Status, errMsg string) {
 		delete(m.active, e.clientIP)
 	}
 	_ = os.RemoveAll(e.workDir)
+	if key := e.uploadKey; key != "" && m.uploads != nil {
+		e.uploadKey = ""
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := m.uploads.DeleteUpload(ctx, key); err != nil {
+				m.log.Warn("failed to delete upload", "key", key, "err", err)
+			}
+		}()
+	}
 }
 
 func (m *JobManager) janitor() {

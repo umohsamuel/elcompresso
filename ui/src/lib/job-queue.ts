@@ -36,6 +36,8 @@ class JobQueue {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private hydrated = false;
   maxActive = 3;
+  /** Set from the server's capabilities: upload straight to S3. */
+  directUpload = false;
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -124,6 +126,7 @@ class JobQueue {
     try {
       const job = await createJob(item.type, item.file!, item.options, {
         signal: controller.signal,
+        direct: this.directUpload,
         onUploadProgress: (f) => {
           const now = performance.now();
           if (now - lastEmit > 100 || f === 1) {

@@ -13,9 +13,10 @@ import (
 )
 
 type S3Config struct {
-	Region string
-	Bucket string
-	Prefix string
+	Region       string
+	Bucket       string
+	Prefix       string
+	UploadPrefix string
 }
 
 type Limits struct {
@@ -76,7 +77,8 @@ func LoadEnvironment() *EnvironmentVariables {
 		S3: S3Config{
 			Region: getEnv("AWS_REGION", ""),
 			Bucket: getEnv("AWS_BUCKET", ""),
-			Prefix: getEnv("S3_PREFIX", "compressed/"),
+			Prefix:       getEnv("S3_PREFIX", "compressed/"),
+			UploadPrefix: getEnv("S3_UPLOAD_PREFIX", "uploads/"),
 		},
 
 		ResultTTL:  getEnvAsDuration("RESULT_TTL", time.Hour),
@@ -110,6 +112,9 @@ func (e *EnvironmentVariables) validate() error {
 	case "s3":
 		if e.S3.Bucket == "" {
 			return fmt.Errorf("AWS_BUCKET is required when STORAGE_TYPE=s3")
+		}
+		if e.S3.UploadPrefix == e.S3.Prefix {
+			return fmt.Errorf("S3_UPLOAD_PREFIX must differ from S3_PREFIX")
 		}
 	default:
 		return fmt.Errorf("STORAGE_TYPE must be local or s3, got %q", e.StorageType)

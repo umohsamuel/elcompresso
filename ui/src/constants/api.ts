@@ -6,6 +6,7 @@ export const API_ROUTES = {
   capabilities: "/api/v1/capabilities",
   jobs: "/api/v1/jobs",
   createJob: (type: string) => `/api/v1/jobs/${type}`,
+  beginUpload: (type: string) => `/api/v1/uploads/${type}`,
   job: (id: string) => `/api/v1/jobs/${id}`,
 } as const;
 

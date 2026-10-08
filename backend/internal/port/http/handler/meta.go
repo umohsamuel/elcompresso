@@ -43,6 +43,8 @@ func (h *MetaHandler) Capabilities(c *gin.Context) {
 			ResultTTLSeconds: int(h.env.ResultTTL.Seconds()),
 		},
 		"container_codecs": compress.ContainerCodecs,
+		// Browsers upload straight to storage (S3) instead of through the API.
+		"direct_upload": h.services.Uploads != nil,
 		"defaults": gin.H{
 			"video": compress.DefaultVideoOptions(),
 			"audio": compress.DefaultAudioOptions(),

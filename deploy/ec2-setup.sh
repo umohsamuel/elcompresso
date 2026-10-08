@@ -34,10 +34,10 @@ if [ ! -f .env ]; then
   cp .env.example .env
   echo
   echo "Created deploy/.env - edit API_DOMAIN and ALLOWED_ORIGINS, then run:"
-  echo "  cd $APP_DIR/deploy && sudo docker compose up -d --build"
+  echo "  cd $APP_DIR/deploy && sudo docker compose --profile caddy up -d --build"
   exit 0
 fi
 
-sudo docker compose up -d --build
+sudo docker compose --profile caddy up -d --build
 sudo docker compose ps
 echo "==> Done. Check: curl https://\$(grep ^API_DOMAIN .env | cut -d= -f2)/health"

@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/umohsamuel/elcompresso/internal/domain/storage"
 )
 
@@ -118,19 +119,24 @@ func (l *Local) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-// S3 stores results in a bucket and hands out short-lived presigned URLs.
+// S3 stores results in a bucket and hands out short-lived presigned URLs. It
+// also accepts uploads straight from the browser under uploadPrefix.
 type S3 struct {
-	client  *s3.Client
-	presign *s3.PresignClient
-	bucket  string
-	prefix  string
+	client       *s3.Client
+	presign      *s3.PresignClient
+	bucket       string
+	prefix       string
+	uploadPrefix string
 }
 
-func NewS3(client *s3.Client, bucket, prefix string) *S3 {
-	return &S3{client: client, presign: s3.NewPresignClient(client), bucket: bucket, prefix: prefix}
+var _ storage.DirectUploader = (*S3)(nil)
+
+func NewS3(client *s3.Client, bucket, prefix, uploadPrefix string) *S3 {
+	return &S3{client: client, presign: s3.NewPresignClient(client), bucket: bucket, prefix: prefix, uploadPrefix: uploadPrefix}
 }
 
-func (s *S3) key(k string) string { return s.prefix + k }
+func (s *S3) key(k string) string       { return s.prefix + k }
+func (s *S3) uploadKey(k string) string { return s.uploadPrefix + k }
 
 func (s *S3) Save(ctx context.Context, key, localPath, contentType string) error {
 	f, err := os.Open(localPath)
@@ -173,5 +179,58 @@ func (s *S3) Open(context.Context, string) (*storage.Object, error) {
 
 func (s *S3) Delete(ctx context.Context, key string) error {
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(s.key(key))})
+	return err
+}
+
+func (s *S3) PresignUpload(ctx context.Context, key string, maxBytes int64, expiry time.Duration) (*storage.DirectUpload, error) {
+	req, err := s.presign.PresignPostObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.uploadKey(key)),
+	}, func(o *s3.PresignPostOptions) {
+		o.Expires = expiry
+		// Enforced by S3 itself, so the size limit can't be bypassed.
+		o.Conditions = []any{[]any{"content-length-range", 1, maxBytes}}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("presign upload: %w", err)
+	}
+	return &storage.DirectUpload{URL: req.URL, Fields: req.Values}, nil
+}
+
+func (s *S3) UploadSize(ctx context.Context, key string) (int64, error) {
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(s.uploadKey(key))})
+	if err != nil {
+		var nf *s3types.NotFound
+		if errors.As(err, &nf) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("check upload: %w", err)
+	}
+	return aws.ToInt64(out.ContentLength), nil
+}
+
+func (s *S3) FetchUpload(ctx context.Context, key, localPath string) error {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(s.uploadKey(key))})
+	if err != nil {
+		var nk *s3types.NoSuchKey
+		if errors.As(err, &nk) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("fetch upload: %w", err)
+	}
+	defer out.Body.Close()
+	f, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, out.Body); err != nil {
+		f.Close()
+		return fmt.Errorf("fetch upload: %w", err)
+	}
+	return f.Close()
+}
+
+func (s *S3) DeleteUpload(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(s.uploadKey(key))})
 	return err
 }

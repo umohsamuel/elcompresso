@@ -1,5 +1,6 @@
 "use client";
 
+import { ArrowUpRightIcon } from "@phosphor-icons/react";
 import { Compressor } from "@/components/compressor";
 import { useCapabilities } from "@/hooks/use-capabilities";
 import { API_BASE_URL } from "@/constants/api";
@@ -60,17 +61,31 @@ export default function Home() {
           {ttlMinutes ? ` ${ttlMinutes >= 60 ? `${Math.round(ttlMinutes / 60)}h` : `${ttlMinutes} min`} after compression` : ""}.
           Your settings are remembered in this browser.
         </p>
-        <p className="shrink-0">
-          Built by{" "}
-          <a
-            href={SITE.author.url}
-            target="_blank"
-            rel="author noopener"
-            className="font-medium text-foreground underline underline-offset-4 hover:text-foreground/80"
-          >
-            {SITE.author.name}
-          </a>
-        </p>
+        <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1">
+          <p>
+            Built by{" "}
+            <a
+              href={SITE.author.url}
+              target="_blank"
+              rel="author noopener"
+              className="font-medium text-foreground underline underline-offset-4 hover:text-foreground/80"
+            >
+              {SITE.author.name}
+            </a>
+          </p>
+          {SITE.links.map((link) => (
+            <a
+              key={link.href}
+              href={link.href}
+              target="_blank"
+              rel="noopener"
+              className="inline-flex items-center gap-1 transition-colors hover:text-foreground"
+            >
+              {link.label}
+              <ArrowUpRightIcon className="size-3" aria-hidden />
+            </a>
+          ))}
+        </div>
       </footer>
     </main>
   );

@@ -44,7 +44,9 @@ export function Compressor() {
 
   useEffect(() => jobQueue.hydrate(), []);
   useEffect(() => {
-    if (caps) jobQueue.maxActive = Math.max(1, caps.limits.max_active_jobs || 3);
+    if (!caps) return;
+    jobQueue.maxActive = Math.max(1, caps.limits.max_active_jobs || 3);
+    jobQueue.directUpload = Boolean(caps.direct_upload);
   }, [caps]);
 
   const options = fit(tab, settings[tab], caps);

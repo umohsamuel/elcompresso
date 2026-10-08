@@ -65,7 +65,7 @@ func main() {
 		fatal(log, "job manager setup failed", err)
 	}
 
-	services := service.NewService(service.ServiceDependencies{Adapter: adapters, Jobs: jobs})
+	services := service.NewService(service.ServiceDependencies{Adapter: adapters, Jobs: jobs, Uploads: service.NewUploads(store)})
 	r := api.API(services, environmentVariables)
 
 	srv := &http.Server{
@@ -110,7 +110,7 @@ func newStorage(ctx context.Context, e *env.EnvironmentVariables) (storageDomain
 		if err != nil {
 			return nil, err
 		}
-		return storage.NewS3(s3.NewFromConfig(cfg), e.S3.Bucket, e.S3.Prefix), nil
+		return storage.NewS3(s3.NewFromConfig(cfg), e.S3.Bucket, e.S3.Prefix, e.S3.UploadPrefix), nil
 	}
 	return storage.NewLocal(filepath.Join(e.DataDir, "results"))
 }

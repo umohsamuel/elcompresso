@@ -1,31 +1,49 @@
-# Production stack for a single EC2 instance:
-#   Caddy (HTTPS, automatic Let's Encrypt certificates) -> elcompresso API
+# elcompresso API for a single EC2 instance.
 #
-#   cp .env.example .env   # then edit
-#   docker compose up -d --build
+# Shared instance with host nginx already on 80/443 (what the GitHub Actions
+# deploy uses): the API listens on 127.0.0.1:${API_PORT}, and deploy/nginx.conf
+# proxies the API domain to it.
+#   docker compose up -d
+#
+# Dedicated instance: also start Caddy, which takes 80/443 and gets the TLS
+# certificate itself.
+#   docker compose --profile caddy up -d --build
+#
+# Settings come from limits.env (committed, sized for a small instance) and
+# then .env (domain/origins, written by the deploy workflow), which wins.
+
+name: elcompresso
 
 services:
   api:
+    image: elcompresso-api:latest
     build: ../backend
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - path: limits.env
+        required: false
+      - path: .env
+        required: false
     environment:
       PORT: ":8080"
       DATA_DIR: /data
       PRODUCTION_ENVIRONMENT: "true"
+    ports:
+      - "127.0.0.1:${API_PORT:-9003}:8080"
     volumes:
       - data:/data
-    expose:
-      - "8080"
+    # Keeps a runaway encode from starving the other apps on the box.
+    mem_limit: ${API_MEM_LIMIT:-768m}
     stop_grace_period: 40s
     logging:
       driver: json-file
       options:
-        max-size: "20m"
-        max-file: "5"
+        max-size: "10m"
+        max-file: "3"
 
   caddy:
     image: caddy:2.10
+    profiles: [caddy]
     restart: unless-stopped
     depends_on:
       - api
@@ -34,7 +52,7 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in deploy/.env}
+      API_DOMAIN: ${API_DOMAIN:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
