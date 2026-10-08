@@ -63,7 +63,7 @@ func (h *JobHandler) BeginUpload(c *gin.Context) {
 		return
 	}
 	clientIP := c.ClientIP()
-	if err := h.services.Jobs.CheckCapacity(clientIP); err != nil {
+	if err := h.services.Jobs.CheckCapacity(c.Request.Context(), clientIP); err != nil {
 		sendJobError(c, err)
 		return
 	}
@@ -110,7 +110,7 @@ func (h *JobHandler) Create(c *gin.Context) {
 
 	jobs := h.services.Jobs
 	clientIP := c.ClientIP()
-	if err := jobs.CheckCapacity(clientIP); err != nil {
+	if err := jobs.CheckCapacity(c.Request.Context(), clientIP); err != nil {
 		sendJobError(c, err)
 		return
 	}
@@ -197,7 +197,7 @@ func (h *JobHandler) Create(c *gin.Context) {
 		return
 	}
 
-	j, err := jobs.Submit(service.SubmitRequest{
+	j, err := jobs.Submit(c.Request.Context(), service.SubmitRequest{
 		ID:           id,
 		Type:         fileType,
 		ClientIP:     clientIP,
@@ -250,7 +250,7 @@ func (h *JobHandler) createFromUpload(c *gin.Context, fileType compress.FileType
 		response.NewErrorResponse(errors.New("could not prepare job")).Send(c)
 		return
 	}
-	j, err := h.services.Jobs.Submit(service.SubmitRequest{
+	j, err := h.services.Jobs.Submit(c.Request.Context(), service.SubmitRequest{
 		ID:           id,
 		Type:         fileType,
 		ClientIP:     clientIP,
@@ -283,7 +283,7 @@ func cleanName(name string) string {
 //
 // GET /api/v1/jobs/:id
 func (h *JobHandler) Get(c *gin.Context) {
-	j, err := h.services.Jobs.Get(c.Param("id"))
+	j, err := h.services.Jobs.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		sendJobError(c, err)
 		return
@@ -303,7 +303,7 @@ func (h *JobHandler) List(c *gin.Context) {
 	}
 	out := make([]job.Job, 0, len(ids))
 	for _, id := range ids {
-		if j, err := h.services.Jobs.Get(strings.TrimSpace(id)); err == nil {
+		if j, err := h.services.Jobs.Get(c.Request.Context(), strings.TrimSpace(id)); err == nil {
 			out = append(out, j)
 		}
 	}

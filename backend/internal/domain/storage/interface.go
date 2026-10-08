@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"github.com/umohsamuel/elcompresso/internal/domain/compress"
 )
 
 type Object struct {
@@ -47,4 +49,20 @@ type DirectUploader interface {
 	FetchUpload(ctx context.Context, key, localPath string) error
 
 	DeleteUpload(ctx context.Context, key string) error
+}
+
+// UploadSlot records an issued direct upload until a job claims it.
+type UploadSlot struct {
+	FileType compress.FileType `json:"file_type"`
+	ClientIP string            `json:"client_ip"`
+	Name     string            `json:"name"`
+	MaxBytes int64             `json:"max_bytes"`
+}
+
+// UploadSlots keeps issued upload slots so each can be claimed once, from any
+// API instance and across restarts.
+type UploadSlots interface {
+	PutUploadSlot(ctx context.Context, id string, slot UploadSlot, ttl time.Duration) error
+	// TakeUploadSlot removes and returns a slot; nil if missing or expired.
+	TakeUploadSlot(ctx context.Context, id string) (*UploadSlot, error)
 }

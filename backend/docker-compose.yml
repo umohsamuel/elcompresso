@@ -1,0 +1,31 @@
+# Redis and RabbitMQ for local development (go run ./cmd):
+#   docker compose up -d
+# They listen on localhost only, matching the defaults in .env.example.
+
+name: elcompresso-dev
+
+services:
+  redis:
+    image: redis:8-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+
+  rabbitmq:
+    image: rabbitmq:4.1-alpine
+    hostname: rabbitmq
+    environment:
+      # The built-in guest user only works from inside the container.
+      RABBITMQ_DEFAULT_USER: elcompresso
+      RABBITMQ_DEFAULT_PASS: elcompresso
+    ports:
+      - "127.0.0.1:5672:5672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ../deploy/rabbitmq.conf:/etc/rabbitmq/conf.d/90-elcompresso.conf:ro
+
+volumes:
+  redis_data:
+  rabbitmq_data:

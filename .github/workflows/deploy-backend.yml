@@ -3,7 +3,7 @@
 # so the API binds to 127.0.0.1:$API_PORT and nginx proxies the API domain to it.
 #
 # GitHub "production" environment:
-#   secrets  EC2_HOST, EC2_SSH_KEY
+#   secrets  EC2_HOST, EC2_SSH_KEY, REDIS_PASSWORD, RABBITMQ_PASSWORD
 #   vars     API_DOMAIN, ALLOWED_ORIGINS, EC2_USER (optional, default ubuntu),
 #            AWS_BUCKET + AWS_REGION (optional: direct-to-S3 uploads and results)
 # Processing limits live in deploy/limits.env.
@@ -62,9 +62,11 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
           ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          RABBITMQ_PASSWORD: ${{ secrets.RABBITMQ_PASSWORD }}
         run: |
           missing=0
-          for name in EC2_HOST EC2_SSH_KEY API_DOMAIN ALLOWED_ORIGINS; do
+          for name in EC2_HOST EC2_SSH_KEY API_DOMAIN ALLOWED_ORIGINS REDIS_PASSWORD RABBITMQ_PASSWORD; do
             if [ -z "${!name}" ]; then echo "::error::$name is not set in the production environment"; missing=1; fi
           done
           exit $missing
@@ -107,9 +109,13 @@ jobs:
           ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
           AWS_BUCKET: ${{ vars.AWS_BUCKET }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-north-1' }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          RABBITMQ_PASSWORD: ${{ secrets.RABBITMQ_PASSWORD }}
         run: |
           {
             printf 'API_DOMAIN=%s\nALLOWED_ORIGINS=%s\nAPI_PORT=%s\n' "$API_DOMAIN" "$ALLOWED_ORIGINS" "$API_PORT"
+            # Compose reads these for the redis/rabbitmq containers and the app's URLs.
+            printf 'REDIS_PASSWORD=%s\nRABBITMQ_USER=elcompresso\nRABBITMQ_PASSWORD=%s\n' "$REDIS_PASSWORD" "$RABBITMQ_PASSWORD"
             if [ -n "$AWS_BUCKET" ]; then
               printf 'STORAGE_TYPE=s3\nAWS_BUCKET=%s\nAWS_REGION=%s\n' "$AWS_BUCKET" "$AWS_REGION"
             fi

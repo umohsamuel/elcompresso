@@ -52,6 +52,14 @@ type EnvironmentVariables struct {
 	Limits             Limits
 	RateLimitPerMinute int
 	MaxActiveJobsPerIP int
+
+	// Job state lives in Redis and work is handed to workers through
+	// RabbitMQ, so jobs survive restarts and the API and workers can run as
+	// separate processes.
+	RedisURL    string
+	RedisPrefix string
+	RabbitMQURL string
+	QueueName   string
 }
 
 func LoadEnvironment() *EnvironmentVariables {
@@ -75,8 +83,8 @@ func LoadEnvironment() *EnvironmentVariables {
 		DataDir:     getEnv("DATA_DIR", "./data"),
 		StorageType: strings.ToLower(getEnv("STORAGE_TYPE", "local")),
 		S3: S3Config{
-			Region: getEnv("AWS_REGION", ""),
-			Bucket: getEnv("AWS_BUCKET", ""),
+			Region:       getEnv("AWS_REGION", ""),
+			Bucket:       getEnv("AWS_BUCKET", ""),
 			Prefix:       getEnv("S3_PREFIX", "compressed/"),
 			UploadPrefix: getEnv("S3_UPLOAD_PREFIX", "uploads/"),
 		},
@@ -98,6 +106,11 @@ func LoadEnvironment() *EnvironmentVariables {
 		},
 		RateLimitPerMinute: getEnvAsInt("RATE_LIMIT_PER_MINUTE", 30),
 		MaxActiveJobsPerIP: getEnvAsInt("MAX_ACTIVE_JOBS_PER_IP", 5),
+
+		RedisURL:    getEnv("REDIS_URL", "redis://localhost:6379/0"),
+		RedisPrefix: getEnv("REDIS_PREFIX", "elcompresso:"),
+		RabbitMQURL: getEnv("RABBITMQ_URL", "amqp://elcompresso:elcompresso@localhost:5672/"),
+		QueueName:   getEnv("RABBITMQ_QUEUE", "elcompresso.jobs"),
 	}
 
 	if err := e.validate(); err != nil {

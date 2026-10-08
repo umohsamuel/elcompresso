@@ -10,19 +10,32 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/umohsamuel/elcompresso/internal/domain/compress"
 	"github.com/umohsamuel/elcompresso/internal/domain/job"
+	"github.com/umohsamuel/elcompresso/internal/domain/queue"
 	"github.com/umohsamuel/elcompresso/internal/domain/storage"
 )
 
 var (
-	ErrNotFound     = errors.New("job not found or expired")
+	ErrNotFound     = job.ErrNotFound
 	ErrQueueFull    = errors.New("the server is busy, please try again in a few minutes")
 	ErrTooManyJobs  = errors.New("too many files in progress, wait for some to finish")
 	ErrNotReady     = errors.New("job has not finished yet")
 	ErrShuttingDown = errors.New("the server is restarting, please try again shortly")
+
+	errStateChanged = errors.New("job state changed")
+	errCanceled     = errors.New("canceled by user")
+)
+
+var (
+	// monitorInterval is how often a worker saves progress and checks for a
+	// cancel request while encoding.
+	monitorInterval = time.Second
+	// bookkeepingTimeout bounds each job-state write.
+	bookkeepingTimeout = 30 * time.Second
 )
 
 type JobManagerConfig struct {
@@ -32,65 +45,47 @@ type JobManagerConfig struct {
 	JobTimeout     time.Duration
 	ResultTTL      time.Duration
 	MaxActivePerIP int
+	// MaxAttempts caps how often a job is retried after a worker died while
+	// running it (default 3).
+	MaxAttempts int
 }
 
-type entry struct {
-	job       job.Job
-	inputPath string
-	workDir   string
-	clientIP  string
-	// uploadKey is set for direct uploads: the input is still in storage and
-	// is fetched to inputPath when the job starts.
-	uploadKey string
-	cancel    context.CancelFunc
-}
-
+// JobManager runs both halves of the pipeline: the API side creates jobs and
+// reads their state, the worker side (Run) encodes them. Job state lives in
+// a job.Store and work is handed over through a queue.Queue, so the two can
+// run in separate processes and survive restarts.
 type JobManager struct {
 	cfg         JobManagerConfig
 	compressors map[compress.FileType]compress.Interface
 	storage     storage.Storage
 	uploads     storage.DirectUploader // nil without direct uploads
+	store       job.Store
+	queue       queue.Queue
 	log         *slog.Logger
 
-	mu       sync.RWMutex
-	jobs     map[string]*entry
-	active   map[string]int // unfinished jobs per client IP
-	queue    chan *entry
-	stopping bool
-
-	baseCtx context.Context
-	stop    context.CancelFunc
-	wg      sync.WaitGroup
+	stopping atomic.Bool
 }
 
-func NewJobManager(cfg JobManagerConfig, compressors map[compress.FileType]compress.Interface, store storage.Storage, log *slog.Logger) (*JobManager, error) {
-	// Jobs live in memory, so anything left on disk is from a previous run.
-	if err := os.RemoveAll(cfg.WorkDir); err != nil {
-		return nil, fmt.Errorf("clean work dir: %w", err)
-	}
+func NewJobManager(cfg JobManagerConfig, compressors map[compress.FileType]compress.Interface, results storage.Storage, store job.Store, q queue.Queue, log *slog.Logger) (*JobManager, error) {
 	if err := os.MkdirAll(cfg.WorkDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create work dir: %w", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = 3
+	}
 	m := &JobManager{
 		cfg:         cfg,
 		compressors: compressors,
-		storage:     store,
+		storage:     results,
+		store:       store,
+		queue:       q,
 		log:         log,
-		jobs:        map[string]*entry{},
-		active:      map[string]int{},
-		queue:       make(chan *entry, cfg.QueueSize),
-		baseCtx:     ctx,
-		stop:        cancel,
 	}
-	m.uploads, _ = store.(storage.DirectUploader)
-	for range cfg.Workers {
-		m.wg.Go(m.worker)
-	}
-	m.wg.Go(m.janitor)
+	m.uploads, _ = results.(storage.DirectUploader)
 	return m, nil
 }
+
+// --- API side ---------------------------------------------------------------
 
 // PrepareWorkDir creates the scratch directory for a new job.
 func (m *JobManager) PrepareWorkDir(id string) (string, error) {
@@ -100,16 +95,25 @@ func (m *JobManager) PrepareWorkDir(id string) (string, error) {
 
 // CheckCapacity is a cheap pre-flight check so clients are rejected before
 // uploading a large file that would not be accepted anyway.
-func (m *JobManager) CheckCapacity(clientIP string) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	switch {
-	case m.stopping:
+func (m *JobManager) CheckCapacity(ctx context.Context, clientIP string) error {
+	if m.stopping.Load() {
 		return ErrShuttingDown
-	case len(m.queue) >= cap(m.queue):
+	}
+	queued, _, err := m.store.Counts(ctx)
+	if err != nil {
+		return err
+	}
+	if queued >= m.cfg.QueueSize {
 		return ErrQueueFull
-	case m.cfg.MaxActivePerIP > 0 && m.active[clientIP] >= m.cfg.MaxActivePerIP:
-		return ErrTooManyJobs
+	}
+	if m.cfg.MaxActivePerIP > 0 {
+		active, err := m.store.ActiveForClient(ctx, clientIP)
+		if err != nil {
+			return err
+		}
+		if active >= m.cfg.MaxActivePerIP {
+			return ErrTooManyJobs
+		}
 	}
 	return nil
 }
@@ -127,9 +131,12 @@ type SubmitRequest struct {
 	UploadKey string
 }
 
-func (m *JobManager) Submit(req SubmitRequest) (job.Job, error) {
-	e := &entry{
-		job: job.Job{
+func (m *JobManager) Submit(ctx context.Context, req SubmitRequest) (job.Job, error) {
+	if err := m.CheckCapacity(ctx, req.ClientIP); err != nil {
+		return job.Job{}, err
+	}
+	rec := &job.Record{
+		Job: job.Job{
 			ID:           req.ID,
 			Type:         req.Type,
 			Status:       job.StatusQueued,
@@ -138,86 +145,76 @@ func (m *JobManager) Submit(req SubmitRequest) (job.Job, error) {
 			Options:      req.Options,
 			CreatedAt:    time.Now().UTC(),
 		},
-		inputPath: req.InputPath,
-		workDir:   req.WorkDir,
-		clientIP:  req.ClientIP,
-		uploadKey: req.UploadKey,
+		ClientIP:  req.ClientIP,
+		InputPath: req.InputPath,
+		WorkDir:   req.WorkDir,
+		UploadKey: req.UploadKey,
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.stopping {
-		return job.Job{}, ErrShuttingDown
+	if err := m.store.Create(ctx, rec); err != nil {
+		return job.Job{}, fmt.Errorf("saving job: %w", err)
 	}
-	if m.cfg.MaxActivePerIP > 0 && m.active[req.ClientIP] >= m.cfg.MaxActivePerIP {
-		return job.Job{}, ErrTooManyJobs
-	}
-	select {
-	case m.queue <- e:
-	default:
+	if err := m.queue.Publish(ctx, rec.Job.ID); err != nil {
+		_ = m.store.Delete(context.WithoutCancel(ctx), rec.Job.ID)
+		m.log.Error("queue publish failed", "job", rec.Job.ID, "err", err)
 		return job.Job{}, ErrQueueFull
 	}
-	m.jobs[e.job.ID] = e
-	m.active[req.ClientIP]++
-	return m.snapshotLocked(e), nil
+	return m.Get(ctx, rec.Job.ID)
 }
 
-func (m *JobManager) Get(id string) (job.Job, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	e, ok := m.jobs[id]
-	if !ok {
+func (m *JobManager) Get(ctx context.Context, id string) (job.Job, error) {
+	rec, err := m.store.Get(ctx, id)
+	if err != nil {
+		return job.Job{}, err
+	}
+	j := rec.Job
+	if j.Status.Finished() && j.ExpiresAt != nil && time.Now().After(*j.ExpiresAt) {
 		return job.Job{}, ErrNotFound
 	}
-	return m.snapshotLocked(e), nil
-}
-
-func (m *JobManager) snapshotLocked(e *entry) job.Job {
-	j := e.job
-	if j.Result != nil {
-		r := *j.Result
-		j.Result = &r
-	}
 	if j.Status == job.StatusQueued {
-		j.QueuePosition = 1
-		for _, other := range m.jobs {
-			if other.job.Status == job.StatusQueued && other.job.CreatedAt.Before(j.CreatedAt) {
-				j.QueuePosition++
-			}
+		if j.QueuePosition, err = m.store.QueuePosition(ctx, id); err != nil {
+			return job.Job{}, err
 		}
 	}
-	return j
+	return j, nil
 }
 
 // Cancel stops a queued or running job, or deletes a finished job's result.
 func (m *JobManager) Cancel(ctx context.Context, id string) error {
-	m.mu.Lock()
-	e, ok := m.jobs[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrNotFound
+	for range 3 {
+		rec, err := m.store.Get(ctx, id)
+		if err != nil {
+			return err
+		}
+		switch rec.Job.Status {
+		case job.StatusQueued:
+			done, err := m.store.Update(ctx, id, func(r *job.Record) error {
+				if r.Job.Status != job.StatusQueued {
+					return errStateChanged // a worker just picked it up
+				}
+				m.finish(r, job.StatusCanceled, "")
+				return nil
+			})
+			if errors.Is(err, errStateChanged) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			// The worker acks its message when it sees the job is finished.
+			m.cleanup(done)
+			return nil
+		case job.StatusProcessing:
+			return m.store.RequestCancel(ctx, id)
+		default:
+			if rec.ResultKey != "" {
+				if err := m.storage.Delete(ctx, rec.ResultKey); err != nil {
+					return err
+				}
+			}
+			return m.store.Delete(ctx, id)
+		}
 	}
-	switch e.job.Status {
-	case job.StatusQueued:
-		m.finishLocked(e, job.StatusCanceled, "")
-	case job.StatusProcessing:
-		if e.cancel != nil {
-			e.cancel() // the worker marks it canceled and cleans up
-		}
-	default:
-		delete(m.jobs, id)
-		var key string
-		if e.job.Result != nil {
-			key = e.job.Result.StorageKey()
-		}
-		m.mu.Unlock()
-		if key != "" {
-			return m.storage.Delete(ctx, key)
-		}
-		return nil
-	}
-	m.mu.Unlock()
-	return nil
+	return errStateChanged
 }
 
 type Download struct {
@@ -228,16 +225,16 @@ type Download struct {
 }
 
 func (m *JobManager) Download(ctx context.Context, id string, inline bool) (*Download, error) {
-	j, err := m.Get(id)
+	rec, err := m.store.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	j := rec.Job
 	if j.Status != job.StatusDone || j.Result == nil {
 		return nil, ErrNotReady
 	}
-	key := j.Result.StorageKey()
 	d := &Download{FileName: j.Result.Name, Type: j.Result.ContentType}
-	url, ok, err := m.storage.DownloadURL(ctx, key, j.Result.Name, inline, 15*time.Minute)
+	url, ok, err := m.storage.DownloadURL(ctx, rec.ResultKey, j.Result.Name, inline, 15*time.Minute)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +242,7 @@ func (m *JobManager) Download(ctx context.Context, id string, inline bool) (*Dow
 		d.URL = url
 		return d, nil
 	}
-	if d.Object, err = m.storage.Open(ctx, key); err != nil {
+	if d.Object, err = m.storage.Open(ctx, rec.ResultKey); err != nil {
 		return nil, err
 	}
 	return d, nil
@@ -257,201 +254,337 @@ type Stats struct {
 	Workers    int `json:"workers"`
 }
 
-func (m *JobManager) Stats() Stats {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	s := Stats{Workers: m.cfg.Workers}
-	for _, e := range m.jobs {
-		switch e.job.Status {
-		case job.StatusQueued:
-			s.Queued++
-		case job.StatusProcessing:
-			s.Processing++
+func (m *JobManager) Stats(ctx context.Context) (Stats, error) {
+	queued, processing, err := m.store.Counts(ctx)
+	return Stats{Queued: queued, Processing: processing, Workers: m.cfg.Workers}, err
+}
+
+// StopAccepting makes the API side refuse new jobs (graceful shutdown).
+func (m *JobManager) StopAccepting() { m.stopping.Store(true) }
+
+// --- Worker side ------------------------------------------------------------
+
+// Run consumes jobs with cfg.Workers parallel encodes until ctx ends. Jobs
+// still running then are put back on the queue for the next worker.
+func (m *JobManager) Run(ctx context.Context) error {
+	deliveries, err := m.queue.Consume(ctx, m.cfg.Workers)
+	if err != nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	for range m.cfg.Workers {
+		wg.Go(func() {
+			for d := range deliveries {
+				m.process(ctx, d)
+			}
+		})
+	}
+	wg.Go(func() { m.janitor(ctx) })
+	wg.Wait()
+	return nil
+}
+
+func (m *JobManager) process(runCtx context.Context, d queue.Delivery) {
+	// Bookkeeping gets a fresh deadline per write and ignores shutdown, so
+	// state is still saved after a long encode or while stopping.
+	bookkeeping := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(runCtx), bookkeepingTimeout)
+	}
+	log := m.log.With("job", d.JobID)
+
+	ctx, cancel := bookkeeping()
+	rec, err := m.store.Update(ctx, d.JobID, func(r *job.Record) error {
+		if r.Job.Status.Finished() {
+			return errStateChanged // canceled while waiting
 		}
-	}
-	return s
-}
-
-// Shutdown stops accepting work, cancels running encodes and waits for the
-// workers to exit.
-func (m *JobManager) Shutdown(ctx context.Context) {
-	m.mu.Lock()
-	m.stopping = true
-	m.mu.Unlock()
-	m.stop()
-
-	done := make(chan struct{})
-	go func() { m.wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
-}
-
-func (m *JobManager) worker() {
-	for {
-		select {
-		case <-m.baseCtx.Done():
-			return
-		case e := <-m.queue:
-			m.process(e)
-		}
-	}
-}
-
-func (m *JobManager) process(e *entry) {
-	ctx, cancel := context.WithTimeout(m.baseCtx, m.cfg.JobTimeout)
-	defer cancel()
-
-	m.mu.Lock()
-	if e.job.Status != job.StatusQueued { // canceled while waiting
-		m.mu.Unlock()
+		now := time.Now().UTC()
+		r.Attempts++
+		r.Job.Status = job.StatusProcessing
+		r.Job.StartedAt = &now
+		r.Job.Stage, r.Job.Progress, r.Job.Error = "", 0, ""
+		return nil
+	})
+	cancel()
+	switch {
+	case errors.Is(err, job.ErrNotFound), errors.Is(err, errStateChanged):
+		_ = d.Ack()
+		return
+	case err != nil:
+		log.Error("claim job", "err", err)
+		_ = d.Requeue()
+		time.Sleep(time.Second) // store unavailable; don't spin
 		return
 	}
-	now := time.Now().UTC()
-	e.job.Status = job.StatusProcessing
-	e.job.StartedAt = &now
-	e.cancel = cancel
-	m.mu.Unlock()
+	log = log.With("type", rec.Job.Type, "attempt", rec.Attempts)
 
-	log := m.log.With("job", e.job.ID, "type", e.job.Type)
-	log.Info("job started", "size", e.job.OriginalSize)
-
-	progress := func(stage string, fraction float64) {
-		m.mu.Lock()
-		e.job.Stage = stage
-		e.job.Progress = math.Round(min(max(fraction, 0), 1)*1000) / 10
-		m.mu.Unlock()
+	// finish saves the final state and acks only once it is stored: if it
+	// can't be saved, the job goes back on the queue rather than being left
+	// looking busy forever.
+	finish := func(status job.Status, msg string, result *job.Result) {
+		ctx, cancel := bookkeeping()
+		defer cancel()
+		if err := m.complete(ctx, rec, status, msg, result); err != nil {
+			log.Error("save job state, requeueing", "status", status, "err", err)
+			_ = d.Requeue()
+			time.Sleep(time.Second)
+			return
+		}
+		_ = d.Ack()
 	}
 
-	var err error
-	if e.uploadKey != "" {
-		progress("preparing", 0)
-		err = m.uploads.FetchUpload(ctx, e.uploadKey, e.inputPath)
+	if rec.Attempts > m.cfg.MaxAttempts {
+		log.Warn("job abandoned after repeated crashes")
+		finish(job.StatusFailed, "the server couldn't process this file, please try a different file or settings", nil)
+		return
 	}
 
-	var res *compress.Result
-	if err == nil {
-		res, err = m.compressors[e.job.Type].Compress(ctx, compress.Task{
-			InputPath:    e.inputPath,
-			WorkDir:      e.workDir,
-			OriginalName: e.job.OriginalName,
-			Options:      e.job.Options,
-		}, progress)
-	}
+	started := time.Now()
+	log.Info("job started", "size", rec.Job.OriginalSize, "redelivered", d.Redelivered)
+	result, err := m.run(runCtx, rec)
 
-	var result *job.Result
-	if err == nil {
-		progress("saving", 1)
-		result, err = m.store(ctx, e, res)
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	switch {
 	case err == nil:
-		e.job.Result = result
-		m.finishLocked(e, job.StatusDone, "")
-		log.Info("job done", "duration", time.Since(now).Round(time.Millisecond), "in", e.job.OriginalSize, "out", result.Size)
-	case errors.Is(err, context.Canceled) && m.baseCtx.Err() == nil:
-		m.finishLocked(e, job.StatusCanceled, "")
+		finish(job.StatusDone, "", result)
+		log.Info("job done", "duration", time.Since(started).Round(time.Millisecond), "in", rec.Job.OriginalSize, "out", result.Size)
+	case runCtx.Err() != nil:
+		// Shutting down: hand the job to the next worker instead of failing it.
+		ctx, cancel := bookkeeping()
+		_, uerr := m.store.Update(ctx, rec.Job.ID, func(r *job.Record) error {
+			if r.Job.Status != job.StatusProcessing {
+				return errStateChanged
+			}
+			r.Job.Status, r.Job.Stage, r.Job.Progress, r.Job.StartedAt = job.StatusQueued, "", 0, nil
+			r.Attempts-- // not the job's fault
+			return nil
+		})
+		cancel()
+		if uerr != nil && !errors.Is(uerr, errStateChanged) {
+			log.Warn("requeue job", "err", uerr)
+		}
+		_ = d.Requeue()
+		log.Info("job requeued for shutdown")
+	case errors.Is(err, errCanceled):
+		finish(job.StatusCanceled, "", nil)
 		log.Info("job canceled")
-	case m.baseCtx.Err() != nil:
-		m.finishLocked(e, job.StatusFailed, "the server restarted while processing this file, please try again")
 	case errors.Is(err, context.DeadlineExceeded):
-		m.finishLocked(e, job.StatusFailed, fmt.Sprintf("took longer than %s - try a faster speed, lower resolution or a shorter clip", m.cfg.JobTimeout))
+		finish(job.StatusFailed, fmt.Sprintf("took longer than %s - try a faster speed, lower resolution or a shorter clip", m.cfg.JobTimeout), nil)
 		log.Warn("job timed out")
 	default:
-		msg := strings.ReplaceAll(err.Error(), e.workDir, "")
-		m.finishLocked(e, job.StatusFailed, msg)
+		finish(job.StatusFailed, strings.ReplaceAll(err.Error(), rec.WorkDir, ""), nil)
 		log.Warn("job failed", "err", err)
 	}
 }
 
-func (m *JobManager) store(ctx context.Context, e *entry, res *compress.Result) (*job.Result, error) {
-	name := outputName(e.job.OriginalName, res.Ext)
-	key := e.job.ID + "/" + name
-	if err := m.storage.Save(ctx, key, res.Path, res.ContentType); err != nil {
+// run fetches the input if needed, encodes it and stores the result.
+func (m *JobManager) run(runCtx context.Context, rec *job.Record) (*job.Result, error) {
+	ctx, cancel := context.WithCancelCause(runCtx)
+	defer cancel(nil)
+	ctx, cancelTimeout := context.WithTimeout(ctx, m.cfg.JobTimeout)
+	defer cancelTimeout()
+
+	if err := os.MkdirAll(rec.WorkDir, 0o750); err != nil {
+		return nil, err
+	}
+
+	// Progress is saved and cancel requests are checked on a timer rather
+	// than on every ffmpeg progress line.
+	var (
+		mu       sync.Mutex
+		stage    string
+		fraction float64
+		dirty    bool
+	)
+	progress := func(s string, f float64) {
+		mu.Lock()
+		stage, fraction, dirty = s, f, true
+		mu.Unlock()
+	}
+	stopMonitor := make(chan struct{})
+	monitorDone := make(chan struct{})
+	go func() {
+		defer close(monitorDone)
+		t := time.NewTicker(monitorInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopMonitor:
+				return
+			case <-t.C:
+			}
+			if yes, _ := m.store.CancelRequested(ctx, rec.Job.ID); yes {
+				cancel(errCanceled)
+			}
+			mu.Lock()
+			s, f, changed := stage, fraction, dirty
+			dirty = false
+			mu.Unlock()
+			if changed {
+				_, _ = m.store.Update(ctx, rec.Job.ID, func(r *job.Record) error {
+					if r.Job.Status != job.StatusProcessing {
+						return errStateChanged
+					}
+					r.Job.Stage = s
+					r.Job.Progress = math.Round(min(max(f, 0), 1)*1000) / 10
+					return nil
+				})
+			}
+		}
+	}()
+	defer func() {
+		close(stopMonitor)
+		<-monitorDone
+	}()
+
+	result, err := m.encode(ctx, rec, progress)
+	if cause := context.Cause(ctx); errors.Is(cause, errCanceled) && err != nil {
+		return nil, errCanceled
+	}
+	return result, err
+}
+
+func (m *JobManager) encode(ctx context.Context, rec *job.Record, progress compress.ProgressFunc) (*job.Result, error) {
+	if rec.UploadKey != "" {
+		if m.uploads == nil {
+			return nil, errors.New("direct uploads are not configured on this worker")
+		}
+		progress("preparing", 0)
+		if err := m.uploads.FetchUpload(ctx, rec.UploadKey, rec.InputPath); err != nil {
+			return nil, err
+		}
+	}
+
+	res, err := m.compressors[rec.Job.Type].Compress(ctx, compress.Task{
+		InputPath:    rec.InputPath,
+		WorkDir:      rec.WorkDir,
+		OriginalName: rec.Job.OriginalName,
+		Options:      rec.Job.Options,
+	}, progress)
+	if err != nil {
+		return nil, err
+	}
+
+	progress("saving", 1)
+	name := outputName(rec.Job.OriginalName, res.Ext)
+	rec.ResultKey = rec.Job.ID + "/" + name
+	if err := m.storage.Save(ctx, rec.ResultKey, res.Path, res.ContentType); err != nil {
 		return nil, fmt.Errorf("saving result: %w", err)
 	}
 	r := &job.Result{
 		Name:        name,
 		Size:        res.Size,
 		ContentType: res.ContentType,
-		DownloadURL: "/api/v1/jobs/" + e.job.ID + "/download",
+		DownloadURL: "/api/v1/jobs/" + rec.Job.ID + "/download",
 		Info:        res.Info,
-		Larger:      res.Size >= e.job.OriginalSize,
+		Larger:      res.Size >= rec.Job.OriginalSize,
 	}
-	if e.job.OriginalSize > 0 {
-		r.SavedPercent = math.Round((1-float64(res.Size)/float64(e.job.OriginalSize))*1000) / 10
+	if rec.Job.OriginalSize > 0 {
+		r.SavedPercent = math.Round((1-float64(res.Size)/float64(rec.Job.OriginalSize))*1000) / 10
 	}
-	r.SetStorageKey(key)
 	return r, nil
 }
 
-// finishLocked moves a job to a terminal state and releases its resources.
-// Callers must hold m.mu.
-func (m *JobManager) finishLocked(e *entry, status job.Status, errMsg string) {
+// complete records a final state and, once stored, releases the job's files.
+func (m *JobManager) complete(ctx context.Context, rec *job.Record, status job.Status, msg string, result *job.Result) error {
+	done, err := m.store.Update(ctx, rec.Job.ID, func(r *job.Record) error {
+		if result != nil {
+			r.Job.Result = result
+			r.ResultKey = rec.ResultKey
+		}
+		m.finish(r, status, msg)
+		return nil
+	})
+	if errors.Is(err, job.ErrNotFound) {
+		m.cleanup(rec) // deleted meanwhile; nothing left to record
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	m.cleanup(done)
+	return nil
+}
+
+// finish moves a record to a terminal state. It only edits the record, so it
+// can run inside a store update.
+func (m *JobManager) finish(r *job.Record, status job.Status, msg string) {
 	now := time.Now().UTC()
 	expires := now.Add(m.cfg.ResultTTL)
-	e.job.Status = status
-	e.job.Error = errMsg
-	e.job.FinishedAt = &now
-	e.job.ExpiresAt = &expires
-	e.job.Stage = ""
+	r.Job.Status = status
+	r.Job.Error = msg
+	r.Job.FinishedAt = &now
+	r.Job.ExpiresAt = &expires
+	r.Job.Stage = ""
 	if status == job.StatusDone {
-		e.job.Progress = 100
-	}
-	e.cancel = nil
-	if m.active[e.clientIP]--; m.active[e.clientIP] <= 0 {
-		delete(m.active, e.clientIP)
-	}
-	_ = os.RemoveAll(e.workDir)
-	if key := e.uploadKey; key != "" && m.uploads != nil {
-		e.uploadKey = ""
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := m.uploads.DeleteUpload(ctx, key); err != nil {
-				m.log.Warn("failed to delete upload", "key", key, "err", err)
-			}
-		}()
+		r.Job.Progress = 100
 	}
 }
 
-func (m *JobManager) janitor() {
+// cleanup deletes a finished job's scratch files and its uploaded input.
+func (m *JobManager) cleanup(rec *job.Record) {
+	if rec.WorkDir != "" {
+		_ = os.RemoveAll(rec.WorkDir)
+	}
+	if rec.UploadKey != "" && m.uploads != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := m.uploads.DeleteUpload(ctx, rec.UploadKey); err != nil {
+			m.log.Warn("failed to delete upload", "key", rec.UploadKey, "err", err)
+		}
+	}
+}
+
+func (m *JobManager) janitor(ctx context.Context) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	for {
 		select {
-		case <-m.baseCtx.Done():
+		case <-ctx.Done():
 			return
 		case <-t.C:
-			m.expire()
+			m.expire(ctx)
+			m.sweepWorkDir(ctx)
 		}
 	}
 }
 
-func (m *JobManager) expire() {
-	now := time.Now()
-	var keys []string
-	m.mu.Lock()
-	for id, e := range m.jobs {
-		if e.job.ExpiresAt != nil && now.After(*e.job.ExpiresAt) {
-			if e.job.Result != nil {
-				keys = append(keys, e.job.Result.StorageKey())
+// expire deletes results that are past their expiry.
+func (m *JobManager) expire(ctx context.Context) {
+	ids, err := m.store.Expired(ctx, time.Now(), 100)
+	if err != nil {
+		m.log.Warn("list expired jobs", "err", err)
+		return
+	}
+	for _, id := range ids {
+		rec, err := m.store.Get(ctx, id)
+		if err == nil && rec.ResultKey != "" {
+			if err := m.storage.Delete(ctx, rec.ResultKey); err != nil {
+				m.log.Warn("failed to delete expired result", "key", rec.ResultKey, "err", err)
+				continue
 			}
-			delete(m.jobs, id)
+		}
+		if err := m.store.Delete(ctx, id); err != nil {
+			m.log.Warn("failed to delete expired job", "job", id, "err", err)
 		}
 	}
-	m.mu.Unlock()
+}
 
-	for _, key := range keys {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := m.storage.Delete(ctx, key); err != nil {
-			m.log.Warn("failed to delete expired result", "key", key, "err", err)
+// sweepWorkDir removes scratch directories left behind by jobs that no
+// longer exist (e.g. an upload that failed halfway).
+func (m *JobManager) sweepWorkDir(ctx context.Context) {
+	entries, err := os.ReadDir(m.cfg.WorkDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-2 * m.cfg.JobTimeout)
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil || !e.IsDir() || info.ModTime().After(cutoff) {
+			continue
 		}
-		cancel()
+		rec, err := m.store.Get(ctx, e.Name())
+		if errors.Is(err, job.ErrNotFound) || (err == nil && rec.Job.Status.Finished()) {
+			_ = os.RemoveAll(filepath.Join(m.cfg.WorkDir, e.Name()))
+		}
 	}
 }
 

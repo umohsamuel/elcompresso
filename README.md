@@ -2,7 +2,7 @@
 
 Self-hosted media compression for video, audio and images. Batch upload files, pick a preset or fine-tune every option, watch real encoding progress, and download the results.
 
-- **Backend**: Go + FFmpeg, async job queue, runs on a single EC2 instance (Docker + Caddy for HTTPS).
+- **Backend**: Go + FFmpeg. An API and separate workers share job state in Redis and hand jobs over through RabbitMQ, so jobs survive restarts and deploys. Runs on a single EC2 instance with Docker; files go straight between the browser and S3.
 - **Frontend**: Next.js, deploys to Vercel.
 
 ## Features
@@ -34,44 +34,54 @@ Self-hosted media compression for video, audio and images. Batch upload files, p
 ## Architecture
 
 ```
-Browser (Vercel)                     EC2
-┌────────────────┐   HTTPS   ┌──────────────────────────────────────────┐
-│ Next.js UI     │──────────▶│ Caddy (TLS) ─▶ elcompresso API (Go)      │
-│ - upload       │           │                 ├─ job queue + N workers │
-│ - poll status  │           │                 ├─ ffmpeg / ffprobe      │
-│ - download     │◀──────────│                 └─ local disk or S3      │
-└────────────────┘           └──────────────────────────────────────────┘
+Browser (Vercel)                      EC2 (Docker Compose)
+┌────────────────┐  HTTPS  ┌─────────────────────────────────────────────────┐
+│ Next.js UI     │────────▶│ nginx/Caddy ─▶ API (Go) ──publish──▶ RabbitMQ   │
+│ - upload       │         │                  │                      │       │
+│ - poll status  │         │                  ▼                      ▼       │
+│ - download     │         │                Redis ◀──progress── worker (Go)  │
+└───────┬────────┘         │             (job state)             + ffmpeg    │
+        │                  └───────────────────────────────────────┬─────────┘
+        │  presigned upload / download                             │
+        └────────────────────────▶  S3  ◀──────────────────────────┘
 ```
 
-1. `POST /api/v1/jobs/{video|audio|image}` streams the upload to disk and returns `202` with a job id.
-2. A worker probes the file, runs FFmpeg and reports progress.
-3. The client polls `GET /api/v1/jobs?ids=…` and downloads from `GET /api/v1/jobs/{id}/download`.
+1. The browser asks the API for an upload slot, posts the file straight to S3, then creates the job (`POST /api/v1/jobs/{type}`). With local storage the file is uploaded to the API instead.
+2. The API saves the job in Redis and publishes its id to RabbitMQ.
+3. A worker takes the job, fetches the input, runs FFmpeg, saves progress to Redis, uploads the result and acknowledges the message only once the job has finished.
+4. The client polls `GET /api/v1/jobs?ids=…` and downloads from `GET /api/v1/jobs/{id}/download` (a redirect to a presigned S3 URL).
+
+**Restarts and deploys don't lose work.** A worker that is stopped puts its running job back on the queue, and RabbitMQ redelivers jobs from a worker that crashed. A job that crashes its worker three times is marked failed instead of retrying forever. Cancelling a running job sets a flag in Redis that the worker checks every second.
 
 The backend follows a hexagonal layout:
 
 ```
 backend/
-  cmd/main.go                    wiring, graceful shutdown
+  cmd/main.go                    wiring, run modes (api | worker | both), graceful shutdown
   cmd/api/api.go                 routes, CORS, logging
   internal/domain/               option types + validation, job model, storage interface
   internal/adapter/ffmpeg/       probing, capability detection, progress-reporting runner
   internal/adapter/compress/     video, audio, image pipelines (+ integration tests)
-  internal/adapter/storage/      local disk and S3
-  internal/service/jobs.go       queue, workers, limits, expiry
+  internal/adapter/storage/      local disk and S3 (results, presigned direct uploads)
+  internal/adapter/redisstore/   job records, indexes and upload slots in Redis
+  internal/adapter/rabbitmq/     durable job queue with publisher confirms and manual acks
+  internal/service/jobs.go       job API, worker loop, retries, limits, expiry
+  internal/service/uploads.go    direct-upload slots
   internal/port/http/            handlers, rate limiting
-deploy/                          docker-compose, Caddyfile, EC2 setup script
+deploy/                          docker-compose (api, worker, redis, rabbitmq), nginx/Caddy, EC2 setup
 ui/                              Next.js frontend
 ```
 
 ## Local development
 
-Requirements: Go 1.26+, FFmpeg (with ffprobe) on your PATH, Node 20+ and pnpm (or bun/npm).
+Requirements: Go 1.26+, FFmpeg (with ffprobe) on your PATH, Docker, Node 20+ and pnpm (or bun/npm).
 
 ```bash
 # Backend: http://localhost:8080
 cd backend
+docker compose up -d        # Redis + RabbitMQ on localhost
 cp .env.example .env        # defaults work as-is (local storage)
-go run ./cmd                # or `air` for hot reload
+go run ./cmd                # API + worker in one process; or `air` for hot reload
 
 # Frontend: http://localhost:3000
 cd ui
@@ -119,6 +129,8 @@ It reads the GitHub `production` environment:
 gh api -X PUT repos/umohsamuel/elcompresso/environments/production
 gh secret set EC2_HOST --env production --body "<elastic-ip>"
 gh secret set EC2_SSH_KEY --env production < ~/.ssh/<key>
+openssl rand -hex 24 | gh secret set REDIS_PASSWORD --env production
+openssl rand -hex 24 | gh secret set RABBITMQ_PASSWORD --env production
 gh variable set API_DOMAIN --env production --body "elcompresso-api.umohsg.com"
 gh variable set ALLOWED_ORIGINS --env production --body "https://elcompresso.umohsg.com,https://elcompresso-*.vercel.app"
 ```
@@ -178,10 +190,14 @@ All backend settings are environment variables (see `backend/.env.example` and `
 | `MAX_IMAGE_MEGAPIXELS` | `100` | Guards against decompression bombs |
 | `RATE_LIMIT_PER_MINUTE` | `30` | New jobs per client IP per minute (0 disables) |
 | `MAX_ACTIVE_JOBS_PER_IP` | `5` | Unfinished jobs per client IP |
+| `REDIS_URL` | `redis://localhost:6379/0` | Job state and upload slots |
+| `REDIS_PREFIX` | `elcompresso:` | Key prefix in Redis |
+| `RABBITMQ_URL` | `amqp://elcompresso:elcompresso@localhost:5672/` | Job queue |
+| `RABBITMQ_QUEUE` | `elcompresso.jobs` | Queue name |
 
 Frontend: `NEXT_PUBLIC_API_URL`, the API's base URL.
 
-Job state is held in memory, so restarting the server drops unfinished jobs (and clears the work directory). That's fine for a single instance; running several instances behind a load balancer would need a shared job store such as Redis.
+Job state lives in Redis and the queue in RabbitMQ, both with persistent volumes, so the API and workers can restart independently. To add encoding capacity, run more `worker` containers (or raise `WORKERS`); with S3 storage they can also run on other machines pointing at the same Redis and RabbitMQ.
 
 ## API
 

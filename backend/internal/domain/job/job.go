@@ -28,11 +28,7 @@ type Result struct {
 	Larger       bool               `json:"larger"`
 	DownloadURL  string             `json:"download_url"`
 	Info         compress.MediaInfo `json:"info"`
-	storageKey   string
 }
-
-func (r *Result) StorageKey() string       { return r.storageKey }
-func (r *Result) SetStorageKey(key string) { r.storageKey = key }
 
 // Job is the public, serialisable view of a compression job.
 type Job struct {
@@ -51,4 +47,19 @@ type Job struct {
 	StartedAt     *time.Time        `json:"started_at,omitempty"`
 	FinishedAt    *time.Time        `json:"finished_at,omitempty"`
 	ExpiresAt     *time.Time        `json:"expires_at,omitempty"`
+}
+
+// Record is a job plus the server-side details needed to run it. It is what
+// the job store persists, so a job survives restarts of the API and workers.
+type Record struct {
+	Job       Job    `json:"job"`
+	ClientIP  string `json:"client_ip"`
+	InputPath string `json:"input_path"`
+	WorkDir   string `json:"work_dir"`
+	// UploadKey is set for direct uploads: the input is still in storage and
+	// is fetched to InputPath when the job starts.
+	UploadKey string `json:"upload_key,omitempty"`
+	ResultKey string `json:"result_key,omitempty"`
+	// Attempts counts how often a worker has started this job.
+	Attempts int `json:"attempts"`
 }

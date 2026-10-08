@@ -6,9 +6,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+	"github.com/umohsamuel/elcompresso/internal/adapter/redisstore"
 	"github.com/umohsamuel/elcompresso/internal/domain/compress"
 	"github.com/umohsamuel/elcompresso/internal/domain/storage"
 )
+
+func newSlots(t *testing.T) storage.UploadSlots {
+	t.Helper()
+	rdb := redis.NewClient(&redis.Options{Addr: miniredis.RunT(t).Addr()})
+	t.Cleanup(func() { rdb.Close() })
+	return redisstore.New(rdb, "test:")
+}
 
 var errMissing = errors.New("missing")
 
@@ -41,7 +51,7 @@ func (f *fakeDirect) DeleteUpload(_ context.Context, key string) error {
 func TestUploadsTakeOnce(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeDirect{sizes: map[string]int64{}}
-	u := NewUploads(store)
+	u := NewUploads(store, newSlots(t))
 	if u == nil {
 		t.Fatal("expected direct uploads to be enabled")
 	}
@@ -78,7 +88,7 @@ func TestUploadsTakeOnce(t *testing.T) {
 func TestUploadsRejectsOversize(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeDirect{sizes: map[string]int64{}}
-	u := NewUploads(store)
+	u := NewUploads(store, newSlots(t))
 
 	up, err := u.Begin(ctx, compress.FileTypeImage, "1.1.1.1", "a.png", 10)
 	if err != nil {
@@ -95,7 +105,7 @@ func TestUploadsRejectsOversize(t *testing.T) {
 }
 
 func TestNewUploadsWithoutDirectStorage(t *testing.T) {
-	if NewUploads(nil) != nil {
+	if NewUploads(nil, nil) != nil {
 		t.Fatal("expected nil without a direct-upload store")
 	}
 }

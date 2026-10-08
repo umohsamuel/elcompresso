@@ -1,4 +1,5 @@
-# elcompresso API for a single EC2 instance.
+# elcompresso on a single EC2 instance: API + worker, with their own Redis
+# (job state) and RabbitMQ (job queue).
 #
 # Shared instance with host nginx already on 80/443 (what the GitHub Actions
 # deploy uses): the API listens on 127.0.0.1:${API_PORT}, and deploy/nginx.conf
@@ -10,36 +11,96 @@
 #   docker compose --profile caddy up -d --build
 #
 # Settings come from limits.env (committed, sized for a small instance) and
-# then .env (domain/origins, written by the deploy workflow), which wins.
+# then .env (domain, origins, passwords; written by the deploy workflow).
 
 name: elcompresso
 
+x-app: &app
+  image: elcompresso-api:latest
+  build: ../backend
+  restart: unless-stopped
+  env_file:
+    - path: limits.env
+      required: false
+    - path: .env
+      required: false
+  environment:
+    PORT: ":8080"
+    DATA_DIR: /data
+    PRODUCTION_ENVIRONMENT: "true"
+    REDIS_URL: redis://:${REDIS_PASSWORD:-elcompresso}@redis:6379/0
+    RABBITMQ_URL: amqp://${RABBITMQ_USER:-elcompresso}:${RABBITMQ_PASSWORD:-elcompresso}@rabbitmq:5672/
+  # Shared so the worker can read inputs uploaded through the API and the API
+  # can serve results (local storage); with S3 only scratch files live here.
+  volumes:
+    - data:/data
+  depends_on:
+    redis:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   api:
-    image: elcompresso-api:latest
-    build: ../backend
-    restart: unless-stopped
-    env_file:
-      - path: limits.env
-        required: false
-      - path: .env
-        required: false
-    environment:
-      PORT: ":8080"
-      DATA_DIR: /data
-      PRODUCTION_ENVIRONMENT: "true"
+    <<: *app
+    command: ["api"]
     ports:
       - "127.0.0.1:${API_PORT:-9003}:8080"
-    volumes:
-      - data:/data
+    mem_limit: ${API_MEM_LIMIT:-256m}
+
+  worker:
+    <<: *app
+    command: ["worker"]
     # Keeps a runaway encode from starving the other apps on the box.
-    mem_limit: ${API_MEM_LIMIT:-768m}
+    mem_limit: ${WORKER_MEM_LIMIT:-768m}
+    # Long enough to stop ffmpeg and hand the running job back to the queue.
     stop_grace_period: 40s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    healthcheck:
+      disable: true # no HTTP server in worker mode
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-elcompresso}
+      --appendonly yes
+      --maxmemory 48mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    mem_limit: 96m
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD:-elcompresso}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-elcompresso}
+
+  rabbitmq:
+    image: rabbitmq:4.1-alpine
+    restart: unless-stopped
+    # RabbitMQ keys its data directory by node name, so keep it stable.
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-elcompresso}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-elcompresso}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq.conf:/etc/rabbitmq/conf.d/90-elcompresso.conf:ro
+    mem_limit: 320m
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
 
   caddy:
     image: caddy:2.10
@@ -60,5 +121,7 @@ services:
 
 volumes:
   data:
+  redis_data:
+  rabbitmq_data:
   caddy_data:
   caddy_config:

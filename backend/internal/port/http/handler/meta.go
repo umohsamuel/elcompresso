@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"errors"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/umohsamuel/elcompresso/internal/domain/compress"
 	"github.com/umohsamuel/elcompresso/internal/service"
@@ -53,9 +56,15 @@ func (h *MetaHandler) Capabilities(c *gin.Context) {
 	}, nil).Send(c)
 }
 
-// Health reports liveness plus queue load.
+// Health reports liveness plus queue load. It fails when the job store is
+// unreachable, since no job can be created or read then.
 //
 // GET /health
 func (h *MetaHandler) Health(c *gin.Context) {
-	response.NewSuccessResponse("server up!!!", gin.H{"queue": h.services.Jobs.Stats()}, nil).Send(c)
+	stats, err := h.services.Jobs.Stats(c.Request.Context())
+	if err != nil {
+		response.NewErrorResponse(errors.New("job store unavailable"), http.StatusServiceUnavailable).Send(c)
+		return
+	}
+	response.NewSuccessResponse("server up!!!", gin.H{"queue": stats}, nil).Send(c)
 }

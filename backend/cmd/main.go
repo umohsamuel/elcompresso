@@ -1,19 +1,31 @@
+// Command elcompresso runs the HTTP API, the encoding worker, or both:
+//
+//	elcompresso api      HTTP API only: accepts uploads, creates jobs, serves status
+//	elcompresso worker   consumes jobs from RabbitMQ and runs ffmpeg
+//	elcompresso          both in one process (local development)
+//
+// Job state is kept in Redis and work is handed over through RabbitMQ, so the
+// two halves can run in separate containers and jobs survive restarts.
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/umohsamuel/elcompresso/cmd/api"
 	"github.com/umohsamuel/elcompresso/internal/adapter"
 	"github.com/umohsamuel/elcompresso/internal/adapter/ffmpeg"
+	"github.com/umohsamuel/elcompresso/internal/adapter/rabbitmq"
+	"github.com/umohsamuel/elcompresso/internal/adapter/redisstore"
 	"github.com/umohsamuel/elcompresso/internal/adapter/storage"
 	storageDomain "github.com/umohsamuel/elcompresso/internal/domain/storage"
 	"github.com/umohsamuel/elcompresso/internal/service"
@@ -22,16 +34,27 @@ import (
 
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
+	mode := "all"
+	if len(os.Args) > 1 {
+		mode = os.Args[1]
+	}
+	if mode != "all" && mode != "api" && mode != "worker" {
+		fmt.Fprintf(os.Stderr, "usage: elcompresso [api|worker]\n")
+		os.Exit(2)
+	}
+	runAPI, runWorker := mode != "worker", mode != "api"
+
 	environmentVariables := env.LoadEnvironment()
 
 	var handler slog.Handler = slog.NewTextHandler(os.Stdout, nil)
 	if environmentVariables.ProductionEnvironment {
 		handler = slog.NewJSONHandler(os.Stdout, nil)
 	}
-	log := slog.New(handler).With("server", util.GetServerID())
+	log := slog.New(handler).With("server", util.GetServerID(), "mode", mode)
 	slog.SetDefault(log)
 
 	ctx := context.Background()
@@ -47,6 +70,23 @@ func main() {
 		fatal(log, "storage setup failed", err)
 	}
 
+	rdb, err := connectRetry(ctx, log, "redis", func() (*redis.Client, error) {
+		return redisstore.Connect(ctx, environmentVariables.RedisURL)
+	})
+	if err != nil {
+		fatal(log, "redis unavailable", err)
+	}
+	defer rdb.Close()
+	jobStore := redisstore.New(rdb, environmentVariables.RedisPrefix)
+
+	queue, err := connectRetry(ctx, log, "rabbitmq", func() (*rabbitmq.Queue, error) {
+		return rabbitmq.Connect(environmentVariables.RabbitMQURL, environmentVariables.QueueName)
+	})
+	if err != nil {
+		fatal(log, "rabbitmq unavailable", err)
+	}
+	defer queue.Close()
+
 	adapters := adapter.NewAdapter(adapter.AdapterDependencies{
 		EnvironmentVariables: environmentVariables,
 		FFmpeg:               ff,
@@ -60,42 +100,97 @@ func main() {
 		JobTimeout:     environmentVariables.JobTimeout,
 		ResultTTL:      environmentVariables.ResultTTL,
 		MaxActivePerIP: environmentVariables.MaxActiveJobsPerIP,
-	}, adapters.Compressors, store, log)
+	}, adapters.Compressors, store, jobStore, queue, log)
 	if err != nil {
 		fatal(log, "job manager setup failed", err)
 	}
 
-	services := service.NewService(service.ServiceDependencies{Adapter: adapters, Jobs: jobs, Uploads: service.NewUploads(store)})
-	r := api.API(services, environmentVariables)
+	runCtx, stopRun := context.WithCancel(ctx)
+	var wg sync.WaitGroup
 
-	srv := &http.Server{
-		Addr:              environmentVariables.Port,
-		Handler:           r.Engine,
-		ReadHeaderTimeout: 15 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		// No Read/WriteTimeout: uploads and downloads of large files can
-		// legitimately take minutes.
+	if runWorker {
+		wg.Go(func() {
+			log.Info("worker started", "workers", environmentVariables.Workers)
+			if err := jobs.Run(runCtx); err != nil {
+				fatal(log, "worker failed", err)
+			}
+		})
 	}
 
-	go func() {
-		log.Info("listening", "addr", srv.Addr, "workers", environmentVariables.Workers, "storage", environmentVariables.StorageType)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fatal(log, "server failed", err)
+	var srv *http.Server
+	if runAPI {
+		services := service.NewService(service.ServiceDependencies{
+			Adapter: adapters,
+			Jobs:    jobs,
+			Uploads: service.NewUploads(store, jobStore),
+		})
+		r := api.API(services, environmentVariables)
+		srv = &http.Server{
+			Addr:              environmentVariables.Port,
+			Handler:           r.Engine,
+			ReadHeaderTimeout: 15 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			// No Read/WriteTimeout: uploads and downloads of large files can
+			// legitimately take minutes.
 		}
-	}()
+		go func() {
+			log.Info("listening", "addr", srv.Addr, "storage", environmentVariables.StorageType)
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				fatal(log, "server failed", err)
+			}
+		}()
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-	log.Info("shutting down")
+	select {
+	case <-stop:
+		log.Info("shutting down")
+	case err := <-queue.Closed():
+		// Exit and let the supervisor restart us; unacknowledged jobs are
+		// redelivered by RabbitMQ.
+		fatal(log, "lost rabbitmq connection", err)
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Warn("http shutdown", "err", err)
+	jobs.StopAccepting()
+	if srv != nil {
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Warn("http shutdown", "err", err)
+		}
 	}
-	jobs.Shutdown(shutdownCtx)
+	// Running encodes are stopped and their jobs put back on the queue.
+	stopRun()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-shutdownCtx.Done():
+		log.Warn("workers did not stop in time")
+	}
 	log.Info("stopped")
+}
+
+// connectRetry retries a dependency for a while: in Docker Compose the API
+// and worker can start before Redis or RabbitMQ is ready.
+func connectRetry[T any](ctx context.Context, log *slog.Logger, name string, connect func() (T, error)) (T, error) {
+	var (
+		v   T
+		err error
+	)
+	for attempt := 1; attempt <= 30; attempt++ {
+		if v, err = connect(); err == nil {
+			return v, nil
+		}
+		log.Warn("waiting for "+name, "attempt", attempt, "err", err)
+		select {
+		case <-ctx.Done():
+			return v, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return v, err
 }
 
 func newStorage(ctx context.Context, e *env.EnvironmentVariables) (storageDomain.Storage, error) {
