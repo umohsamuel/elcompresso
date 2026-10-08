@@ -1,0 +1,46 @@
+# Production stack for a single EC2 instance:
+#   Caddy (HTTPS, automatic Let's Encrypt certificates) -> elcompresso API
+#
+#   cp .env.example .env   # then edit
+#   docker compose up -d --build
+
+services:
+  api:
+    build: ../backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: ":8080"
+      DATA_DIR: /data
+      PRODUCTION_ENVIRONMENT: "true"
+    volumes:
+      - data:/data
+    expose:
+      - "8080"
+    stop_grace_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:

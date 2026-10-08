@@ -1,11 +1,15 @@
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+export const API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"
+).replace(/\/+$/, "");
 
 export const API_ROUTES = {
-  compress: {
-    video: "/api/v1/file-compress/video",
-    audio: "/api/v1/file-compress/audio",
-    image: "/api/v1/file-compress/image",
-  },
-  upload: "/api/v1/file-upload",
+  capabilities: "/api/v1/capabilities",
+  jobs: "/api/v1/jobs",
+  createJob: (type: string) => `/api/v1/jobs/${type}`,
+  job: (id: string) => `/api/v1/jobs/${id}`,
+} as const;
+
+export const queryKeys = {
+  capabilities: ["capabilities"] as const,
+  jobs: (ids: string[]) => ["jobs", ...ids] as const,
 } as const;

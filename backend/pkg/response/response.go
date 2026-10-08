@@ -56,3 +56,7 @@ func NewSuccessResponse(message string, data interface{}, metadata interface{}) 
 func (res SuccessResponse) Send(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
+
+func (res SuccessResponse) SendStatus(c *gin.Context, status int) {
+	c.JSON(status, res)
+}

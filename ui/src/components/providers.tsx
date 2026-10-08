@@ -20,7 +20,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       {children}
-      <Toaster position="bottom-right" />
+      <Toaster position="bottom-right" theme="dark" toastOptions={{ className: "rounded-none! font-mono! text-xs!" }} />
     </QueryClientProvider>
   );
 }

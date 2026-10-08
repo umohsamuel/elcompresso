@@ -1,0 +1,6 @@
+tmp
+data
+.env
+*.exe
+.air.toml
+build-errors.log

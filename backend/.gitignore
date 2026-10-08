@@ -1,5 +1,7 @@
 input
 output
 tmp
+data
 .env
 public/input
+*.exe

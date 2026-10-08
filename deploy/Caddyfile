@@ -1,0 +1,23 @@
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy api:8080 {
+		# Uploads can be large and slow; don't buffer them in Caddy.
+		flush_interval -1
+		transport http {
+			read_timeout 15m
+			write_timeout 15m
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
