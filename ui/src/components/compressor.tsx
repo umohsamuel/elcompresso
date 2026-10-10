@@ -65,12 +65,12 @@ export function Compressor() {
     setStaged((prev) => ({ ...prev, [tab]: [] }));
   };
 
-  // Phones: input → settings → staged files (sticky bar) → results.
-  // Desktop: input, staged files and results on the left, settings on the right.
+  // Phones: input → staged files → progress/results → settings.
+  // Desktop: one screen tall; the left column (input, staged files, results)
+  // and the settings each scroll on their own.
   return (
-    <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_380px] lg:grid-rows-[auto_auto_1fr] lg:items-start lg:gap-x-6 lg:gap-y-4">
-      {/* Input */}
-      <div className="min-w-0 space-y-4 lg:col-start-1 lg:row-start-1">
+    <div className="flex flex-col gap-4 lg:grid lg:h-full lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_380px] lg:grid-rows-[minmax(0,1fr)] lg:gap-6">
+      <div className="min-w-0 space-y-4 lg:h-full lg:overflow-y-auto lg:pr-1">
         <Tabs value={tab} onValueChange={(v) => tabStore.set(v as FileType)}>
           <TabsList className="grid h-10! w-full grid-cols-3 sm:h-9!">
             {TABS.map(({ value, label, icon: Icon }) => (
@@ -85,10 +85,45 @@ export function Compressor() {
         </Tabs>
 
         <FileDropZone fileType={tab} maxBytes={sizeLimit(caps, tab)} onFiles={addFiles} />
+
+        {files.length > 0 && (
+          <div className="min-w-0 space-y-3 border border-border p-3">
+            <div className="flex items-center justify-between text-xs">
+              <span>
+                <span className="font-medium">{files.length} ready</span>
+                <span className="text-muted-foreground"> · {formatBytes(totalSize)}</span>
+              </span>
+              <Button size="xs" variant="ghost" className="max-sm:h-8" onClick={() => setStaged((p) => ({ ...p, [tab]: [] }))}>
+                Clear
+              </Button>
+            </div>
+            {/* overflow-x-hidden: an overflow-y box otherwise also scrolls sideways. */}
+            <ul className="max-h-28 space-y-0.5 overflow-x-hidden overflow-y-auto sm:max-h-40">
+              {files.map((f) => (
+                <li key={key(f)} className="flex min-w-0 items-center gap-2 text-[11px]">
+                  <span className="min-w-0 flex-1 truncate" title={f.name}>{f.name}</span>
+                  <span className="shrink-0 text-muted-foreground tabular-nums">{formatBytes(f.size)}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${f.name}`}
+                    className="flex size-7 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground sm:size-6"
+                    onClick={() => setStaged((p) => ({ ...p, [tab]: p[tab].filter((x) => x !== f) }))}
+                  >
+                    <XIcon className="size-3.5 sm:size-3" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <Button className="h-10 w-full text-sm sm:h-9" onClick={start}>
+              Compress {files.length > 1 ? `${files.length} files` : "file"}
+            </Button>
+          </div>
+        )}
+
+        <JobList items={items} />
       </div>
 
-      {/* Settings */}
-      <aside className="min-w-0 space-y-5 border border-border bg-card p-4 lg:sticky lg:top-6 lg:col-start-2 lg:row-span-3 lg:row-start-1 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
+      <aside className="min-w-0 space-y-5 border border-border bg-card p-4 lg:max-h-full lg:self-start lg:overflow-y-auto">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium">{TABS.find((t) => t.value === tab)?.label} settings</h2>
           <Button
@@ -107,46 +142,6 @@ export function Compressor() {
         {tab === "audio" && <AudioSettings value={options as OptionsByType["audio"]} onChange={(v) => setSettings("audio", v)} caps={caps} />}
         {tab === "image" && <ImageSettings value={options as OptionsByType["image"]} onChange={(v) => setSettings("image", v)} caps={caps} />}
       </aside>
-
-      {/* Staged files. On phones this docks to the bottom of the screen so
-          "Compress" stays reachable while scrolling through the settings. */}
-      {files.length > 0 && (
-        <div className="sticky bottom-0 z-20 -mx-4 min-w-0 space-y-3 border-t border-border bg-background/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:mx-0 sm:border lg:static lg:col-start-1 lg:row-start-2 lg:bg-transparent lg:backdrop-blur-none">
-          <div className="flex items-center justify-between text-xs">
-            <span>
-              <span className="font-medium">{files.length} ready</span>
-              <span className="text-muted-foreground"> · {formatBytes(totalSize)}</span>
-            </span>
-            <Button size="xs" variant="ghost" className="max-sm:h-8" onClick={() => setStaged((p) => ({ ...p, [tab]: [] }))}>
-              Clear
-            </Button>
-          </div>
-          <ul className="max-h-24 space-y-1 overflow-y-auto sm:max-h-40">
-            {files.map((f) => (
-              <li key={key(f)} className="flex items-center gap-2 text-[11px]">
-                <span className="min-w-0 flex-1 truncate" title={f.name}>{f.name}</span>
-                <span className="text-muted-foreground tabular-nums">{formatBytes(f.size)}</span>
-                <button
-                  type="button"
-                  aria-label={`Remove ${f.name}`}
-                  className="-m-1.5 p-1.5 text-muted-foreground hover:text-foreground"
-                  onClick={() => setStaged((p) => ({ ...p, [tab]: p[tab].filter((x) => x !== f) }))}
-                >
-                  <XIcon className="size-3.5 sm:size-3" />
-                </button>
-              </li>
-            ))}
-          </ul>
-          <Button className="h-10 w-full text-sm sm:h-9" onClick={start}>
-            Compress {files.length > 1 ? `${files.length} files` : "file"}
-          </Button>
-        </div>
-      )}
-
-      {/* Results */}
-      <div className="min-w-0 lg:col-start-1 lg:row-start-3">
-        <JobList items={items} />
-      </div>
     </div>
   );
 }
