@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ArrowCounterClockwiseIcon, FilmStripIcon, ImageIcon, MusicNotesIcon, XIcon } from "@phosphor-icons/react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { AudioSettings } from "@/components/settings/audio-settings";
 import { ImageSettings } from "@/components/settings/image-settings";
 import { chipClass } from "@/components/settings/video-settings";
 import { useCapabilities } from "@/hooks/use-capabilities";
-import { jobQueue, useJobQueue } from "@/lib/job-queue";
+import { jobQueue } from "@/lib/job-queue";
 import { settingsStore, setSettings, resetSettings } from "@/lib/settings-store";
 import { formatBytes } from "@/lib/format";
 import {
@@ -38,7 +38,6 @@ const tabStore = createLocalStore<FileType>("elcompresso.tab", "video");
 export function Compressor() {
   const tab = tabStore.useValue();
   const settings = settingsStore.useValue();
-  const items = useJobQueue();
   const { data: caps } = useCapabilities();
   const [staged, setStaged] = useState<Record<FileType, File[]>>({ video: [], audio: [], image: [] });
 
@@ -53,11 +52,14 @@ export function Compressor() {
   const files = staged[tab];
   const totalSize = files.reduce((s, f) => s + f.size, 0);
 
-  const addFiles = (incoming: File[]) =>
-    setStaged((prev) => {
-      const seen = new Set(prev[tab].map(key));
-      return { ...prev, [tab]: [...prev[tab], ...incoming.filter((f) => !seen.has(key(f)))] };
-    });
+  const addFiles = useCallback(
+    (incoming: File[]) =>
+      setStaged((prev) => {
+        const seen = new Set(prev[tab].map(key));
+        return { ...prev, [tab]: [...prev[tab], ...incoming.filter((f) => !seen.has(key(f)))] };
+      }),
+    [tab]
+  );
 
   const start = () => {
     if (!files.length) return;
@@ -120,7 +122,7 @@ export function Compressor() {
           </div>
         )}
 
-        <JobList items={items} />
+        <JobList />
       </div>
 
       <aside className="min-w-0 space-y-5 border border-border bg-card p-4 lg:max-h-full lg:self-start lg:overflow-y-auto">

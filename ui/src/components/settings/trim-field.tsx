@@ -16,6 +16,13 @@ interface TrimFieldProps {
 export function TrimField({ id, value, onChange }: TrimFieldProps) {
   const [start, setStart] = useState(formatTime(value.start));
   const [end, setEnd] = useState(formatTime(value.end));
+  const [synced, setSynced] = useState(value);
+
+  if (synced.start !== value.start || synced.end !== value.end) {
+    setSynced(value);
+    if (parseTime(start) !== value.start) setStart(formatTime(value.start));
+    if (parseTime(end) !== value.end) setEnd(formatTime(value.end));
+  }
 
   const s = parseTime(start);
   const e = parseTime(end);

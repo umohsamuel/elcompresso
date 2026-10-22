@@ -47,15 +47,16 @@ class JobQueue {
   getSnapshot = () => this.items;
   getServerSnapshot = () => EMPTY;
 
-  private commit(items: QueueItem[]) {
+  private commit(items: QueueItem[], save = true) {
     this.items = items;
-    this.persist();
+    if (save) this.persist();
     this.listeners.forEach((l) => l());
   }
 
-  private update(id: string, patch: Partial<QueueItem> | ((item: QueueItem) => Partial<QueueItem>)) {
+  private update(id: string, patch: Partial<QueueItem> | ((item: QueueItem) => Partial<QueueItem>), save = true) {
     this.commit(
-      this.items.map((it) => (it.id === id ? { ...it, ...(typeof patch === "function" ? patch(it) : patch) } : it))
+      this.items.map((it) => (it.id === id ? { ...it, ...(typeof patch === "function" ? patch(it) : patch) } : it)),
+      save
     );
   }
 
@@ -131,7 +132,7 @@ class JobQueue {
           const now = performance.now();
           if (now - lastEmit > 100 || f === 1) {
             lastEmit = now;
-            this.update(item.id, { upload: f });
+            this.update(item.id, { upload: f }, false);
           }
         },
       });
@@ -174,16 +175,19 @@ class JobQueue {
 
     try {
       const jobs = new Map((await getJobs(ids)).map((j) => [j.id, j]));
-      this.commit(
-        this.items.map((it) => {
-          if (!it.job || !ids.includes(it.job.id)) return it;
-          const job = jobs.get(it.job.id);
-          if (!job) {
-            return { ...it, status: "failed", error: "The server no longer has this job (it may have restarted)." };
-          }
-          return { ...it, job, status: job.status, error: job.error };
-        })
-      );
+      let changed = false;
+      const next = this.items.map((it): QueueItem => {
+        if (!it.job || !ids.includes(it.job.id)) return it;
+        const job = jobs.get(it.job.id);
+        if (!job) {
+          changed = true;
+          return { ...it, status: "failed", error: "The server no longer has this job (it may have restarted)." };
+        }
+        if (job.status === it.status && job.error === it.error && JSON.stringify(job) === JSON.stringify(it.job)) return it;
+        changed = true;
+        return { ...it, job, status: job.status, error: job.error };
+      });
+      if (changed) this.commit(next);
     } catch {
       // Network blip: keep polling.
     }
@@ -224,7 +228,14 @@ class JobQueue {
   }
 
   clearFinished() {
-    this.items.filter((it) => !isActive(it.status)).forEach((it) => this.remove(it.id));
+    const finished = this.items.filter((it) => !isActive(it.status));
+    if (!finished.length) return;
+    for (const item of finished) {
+      if (item.job && item.status === "done") void cancelJob(item.job.id).catch(() => undefined);
+      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    }
+    this.commit(this.items.filter((it) => isActive(it.status)));
+    this.pump();
   }
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import {
   ArrowClockwiseIcon,
   DownloadSimpleIcon,
@@ -16,7 +16,7 @@ import { Progress } from "@/components/ui/progress";
 import { CompareDialog } from "@/components/compare-dialog";
 import { downloadUrl } from "@/lib/api/jobs";
 import { formatBytes, formatDuration } from "@/lib/format";
-import { isActive, jobQueue, type QueueItem } from "@/lib/job-queue";
+import { isActive, jobQueue, useJobQueue, type QueueItem } from "@/lib/job-queue";
 import { cn } from "@/lib/utils";
 import type { FileType } from "@/types/api";
 
@@ -26,7 +26,8 @@ const ICONS: Record<FileType, typeof ImageIcon> = {
   image: ImageIcon,
 };
 
-export function JobList({ items }: { items: QueueItem[] }) {
+export function JobList() {
+  const items = useJobQueue();
   if (!items.length) return null;
 
   const done = items.filter((it) => it.status === "done" && it.job?.result);
@@ -80,7 +81,7 @@ export function JobList({ items }: { items: QueueItem[] }) {
   );
 }
 
-function JobRow({ item }: { item: QueueItem }) {
+const JobRow = memo(function JobRow({ item }: { item: QueueItem }) {
   const [comparing, setComparing] = useState(false);
   const Icon = ICONS[item.type];
   const result = item.job?.result;
@@ -181,7 +182,7 @@ function JobRow({ item }: { item: QueueItem }) {
       )}
     </li>
   );
-}
+});
 
 function describe(item: QueueItem): { label: string; progress?: number } {
   const job = item.job;
