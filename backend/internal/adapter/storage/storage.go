@@ -158,6 +158,9 @@ func (s *S3) Save(ctx context.Context, key, localPath, contentType string) error
 	if err != nil {
 		return fmt.Errorf("upload to s3: %w", err)
 	}
+	if err := f.Close(); err != nil {
+		return err
+	}
 	return os.Remove(localPath)
 }
 
